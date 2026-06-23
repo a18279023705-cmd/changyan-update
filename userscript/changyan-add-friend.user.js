@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.10.0
+// @version      9.11.0
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -36,6 +36,8 @@
     let successCount = 0;
     let failCount = 0;
     let skipCount = 0;
+    let deferCount = 0;
+    let deferredPhoneLog = [];
     let keepAliveTimer = null;
 
     let panel = null;
@@ -132,12 +134,21 @@
         }
     }
 
+    function phoneKey(id) {
+        return /^1[3-9]\d{9}$/.test(id) ? id : String(id).toLowerCase();
+    }
+
+    function statsLine() {
+        return `成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount} · 移后 ${deferCount}`;
+    }
+
     function updateStats() {
         if (elStats) {
             elStats.innerHTML = `
                 <span class="cy-chip cy-chip-ok"><span class="cy-chip-num">${successCount}</span><span class="cy-chip-label">成功</span></span>
                 <span class="cy-chip cy-chip-fail"><span class="cy-chip-num">${failCount}</span><span class="cy-chip-label">失败</span></span>
                 <span class="cy-chip cy-chip-skip"><span class="cy-chip-num">${skipCount}</span><span class="cy-chip-label">跳过</span></span>
+                <span class="cy-chip cy-chip-defer"><span class="cy-chip-num">${deferCount}</span><span class="cy-chip-label">移后</span></span>
             `;
         }
         updateProgress();
@@ -237,9 +248,16 @@
     }
 
     /** 频繁时把当前号移到队列末尾，phoneIndex 不变以处理下一个号 */
+    function recordPhoneDeferred(phone) {
+        if (!phone) return;
+        deferCount++;
+        deferredPhoneLog.push(phone);
+    }
+
     function deferCurrentPhoneToEnd() {
         if (phoneIndex < 0 || phoneIndex >= phoneList.length) return '';
         const phone = phoneList[phoneIndex];
+        recordPhoneDeferred(phone);
         phoneList.splice(phoneIndex, 1);
         phoneList.push(phone);
         if (phoneIndex >= phoneList.length) phoneIndex = 0;
@@ -328,6 +346,8 @@
                 successCount,
                 failCount,
                 skipCount,
+                deferCount,
+                deferredPhoneLog,
                 talkIndex,
                 fingerprint: listFingerprint(phoneList),
             }));
@@ -347,6 +367,8 @@
             successCount = data.successCount || 0;
             failCount = data.failCount || 0;
             skipCount = data.skipCount || 0;
+            deferCount = data.deferCount || 0;
+            deferredPhoneLog = Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : [];
             talkIndex = data.talkIndex || 0;
             updateStats();
             updateStartButtonLabel();
@@ -685,6 +707,8 @@
             skipCount = 0;
             talkIndex = 0;
             rateLimitRoundCount = 0;
+            deferCount = 0;
+            deferredPhoneLog = [];
             clearProgress();
         }
 
@@ -710,7 +734,7 @@
         while (phoneIndex < phoneList.length) {
             if (stopRequested) {
                 saveProgress();
-                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
+                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | ${statsLine()}`);
                 break;
             }
 
@@ -726,7 +750,7 @@
                 rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
-                setStatus(`成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount} | 已完成: ${phone}`);
+                setStatus(`${statsLine()} | 已完成: ${phone}`);
                 await delay(1200);
             } else if (result === 'not_found') {
                 failCount++;
@@ -734,7 +758,7 @@
                 rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
-                setStatus(`用户不存在，跳过: ${phone} | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
+                setStatus(`用户不存在，跳过: ${phone} | ${statsLine()}`);
                 await dismissOverlaySafely();
                 await delay(1200);
             } else if (result === 'already_friend') {
@@ -743,7 +767,7 @@
                 rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
-                setStatus(`已是好友，跳过: ${phone} | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
+                setStatus(`已是好友，跳过: ${phone} | ${statsLine()}`);
                 await delay(1000);
             } else if (result === 'rate_limit') {
                 if (phoneList.length <= 1) {
@@ -758,7 +782,8 @@
                         await waitRateLimitCooldown(deferred);
                     } else {
                         const nextPhone = phoneList[phoneIndex] || '';
-                        setStatus(`频繁: ${deferred} 已移到最后，换号继续 → ${nextPhone}`);
+                        setStatus(`频繁: ${deferred} 已移到最后（移后累计 ${deferCount}）→ ${nextPhone}`);
+                        updateStats();
                         await delay(800);
                     }
                 }
@@ -772,13 +797,13 @@
 
             if (stopRequested) {
                 saveProgress();
-                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
+                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | ${statsLine()}`);
                 break;
             }
         }
 
         if (!stopRequested && phoneIndex >= phoneList.length) {
-            setStatus(`全部完成 | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
+            setStatus(`全部完成 | ${statsLine()} | 移后记录 ${deferredPhoneLog.length} 条`);
             clearProgress();
         }
 
@@ -810,6 +835,8 @@
         skipCount = 0;
         talkIndex = 0;
         rateLimitRoundCount = 0;
+        deferCount = 0;
+        deferredPhoneLog = [];
         clearProgress();
         updateStats();
         updateStartButtonLabel();
@@ -1104,6 +1131,8 @@
                 skipCount = 0;
                 talkIndex = 0;
                 rateLimitRoundCount = 0;
+                deferCount = 0;
+                deferredPhoneLog = [];
                 clearProgress();
                 saveProgress();
                 updateStats();
@@ -1126,7 +1155,7 @@
         style.textContent = `
             #cy-add-friend-panel {
                 position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 300px; background: #f1f5f9; border-radius: 14px;
+                width: 360px; background: #f1f5f9; border-radius: 14px;
                 box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
@@ -1167,18 +1196,18 @@
                 font-size: 15px; color: #0f172a; font-weight: 800; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-stats {
-                display: flex; gap: 6px; margin-bottom: 10px;
+                display: flex; gap: 5px; margin-bottom: 10px;
             }
             #cy-add-friend-panel .cy-chip {
                 flex: 1; display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 2px; padding: 8px 4px; border-radius: 10px;
-                border: 1px solid transparent; min-height: 52px;
+                justify-content: center; gap: 2px; padding: 7px 2px; border-radius: 10px;
+                border: 1px solid transparent; min-height: 48px; min-width: 0;
             }
             #cy-add-friend-panel .cy-chip-num {
-                font-size: 18px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+                font-size: 16px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-chip-label {
-                font-size: 11px; font-weight: 600; opacity: 0.85;
+                font-size: 10px; font-weight: 600; opacity: 0.85;
             }
             #cy-add-friend-panel .cy-chip-ok {
                 background: #ecfdf5; border-color: #a7f3d0; color: #047857;
@@ -1188,6 +1217,9 @@
             }
             #cy-add-friend-panel .cy-chip-skip {
                 background: #f8fafc; border-color: #e2e8f0; color: #475569;
+            }
+            #cy-add-friend-panel .cy-chip-defer {
+                background: #fffbeb; border-color: #fde68a; color: #b45309;
             }
             #cy-add-friend-panel .cy-progress-track {
                 height: 8px; background: #e2e8f0; border-radius: 99px; overflow: hidden;
@@ -1200,7 +1232,7 @@
             }
             #cy-add-friend-panel .cy-split-row {
                 display: grid;
-                grid-template-columns: minmax(0, 1fr) 102px;
+                grid-template-columns: minmax(0, 1fr) 112px;
                 gap: 8px; margin-bottom: 10px; align-items: stretch;
             }
             #cy-add-friend-panel .cy-field-card {
@@ -1316,7 +1348,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.10</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.11</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
