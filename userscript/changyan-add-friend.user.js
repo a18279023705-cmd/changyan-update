@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.9.4
+// @version      9.10.0
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -30,6 +30,7 @@
     let talkIndex = 0;
     let phoneList = [];
     let phoneIndex = 0;
+    let rateLimitRoundCount = 0;
     let running = false;
     let stopRequested = false;
     let successCount = 0;
@@ -233,6 +234,16 @@
             setStatus(`频率限制，随机等待 ${timeText} 后重试（${range.min}-${range.max} 分钟）: ${phone}`);
             await delay(1000);
         }
+    }
+
+    /** 频繁时把当前号移到队列末尾，phoneIndex 不变以处理下一个号 */
+    function deferCurrentPhoneToEnd() {
+        if (phoneIndex < 0 || phoneIndex >= phoneList.length) return '';
+        const phone = phoneList[phoneIndex];
+        phoneList.splice(phoneIndex, 1);
+        phoneList.push(phone);
+        if (phoneIndex >= phoneList.length) phoneIndex = 0;
+        return phone;
     }
 
     function parseDelayMinutes(raw, fallback) {
@@ -591,7 +602,7 @@
      * success      → 添加成功，下一号
      * not_found    → 用户不存在，下一号
      * already_friend → 已是好友（点X关闭），下一号
-     * rate_limit   → 频繁限制，随机等待后重试当前号
+     * rate_limit   → 频繁限制，当前号移到最后，换下一个号（全批都频繁则等待后重试）
      * retry        → 未完成添加，清弹窗后重试当前号
      */
     async function addFriendAttempt(phone) {
@@ -673,11 +684,13 @@
             failCount = 0;
             skipCount = 0;
             talkIndex = 0;
+            rateLimitRoundCount = 0;
             clearProgress();
         }
 
         running = true;
         stopRequested = false;
+        rateLimitRoundCount = 0;
         updateStats();
         startKeepAlive();
         elBtnStart.disabled = true;
@@ -710,6 +723,7 @@
             if (result === 'success') {
                 successCount++;
                 phoneIndex++;
+                rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
                 setStatus(`成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount} | 已完成: ${phone}`);
@@ -717,6 +731,7 @@
             } else if (result === 'not_found') {
                 failCount++;
                 phoneIndex++;
+                rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
                 setStatus(`用户不存在，跳过: ${phone} | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
@@ -725,12 +740,28 @@
             } else if (result === 'already_friend') {
                 skipCount++;
                 phoneIndex++;
+                rateLimitRoundCount = 0;
                 updateStats();
                 saveProgress();
                 setStatus(`已是好友，跳过: ${phone} | 成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount}`);
                 await delay(1000);
             } else if (result === 'rate_limit') {
-                await waitRateLimitCooldown(phone);
+                if (phoneList.length <= 1) {
+                    await waitRateLimitCooldown(phone);
+                    rateLimitRoundCount = 0;
+                } else {
+                    const deferred = deferCurrentPhoneToEnd();
+                    rateLimitRoundCount++;
+                    if (rateLimitRoundCount >= phoneList.length) {
+                        rateLimitRoundCount = 0;
+                        setStatus(`本轮号码均频繁，等待后继续: ${deferred}`);
+                        await waitRateLimitCooldown(deferred);
+                    } else {
+                        const nextPhone = phoneList[phoneIndex] || '';
+                        setStatus(`频繁: ${deferred} 已移到最后，换号继续 → ${nextPhone}`);
+                        await delay(800);
+                    }
+                }
                 await dismissOverlaySafely();
                 saveProgress();
             } else {
@@ -778,6 +809,7 @@
         failCount = 0;
         skipCount = 0;
         talkIndex = 0;
+        rateLimitRoundCount = 0;
         clearProgress();
         updateStats();
         updateStartButtonLabel();
@@ -1071,6 +1103,7 @@
                 failCount = 0;
                 skipCount = 0;
                 talkIndex = 0;
+                rateLimitRoundCount = 0;
                 clearProgress();
                 saveProgress();
                 updateStats();
@@ -1283,7 +1316,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.9.4</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.10</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
@@ -1355,7 +1388,7 @@
         delayInline.append(elDelayMin, delaySep, elDelayMax);
         const delayHint = document.createElement('div');
         delayHint.className = 'cy-delay-hint';
-        delayHint.textContent = '频繁时等待，默认 1～5 分钟';
+        delayHint.textContent = '频繁时移到最后换号，默认等待 1～5 分钟';
         delayBox.append(delayInline, delayHint);
         delayCol.append(delayLabel, delayBox);
         loadDelaySettings();
