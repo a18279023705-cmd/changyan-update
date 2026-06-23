@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.6
+// @version      9.7
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -1089,69 +1089,100 @@
         style.textContent = `
             #cy-add-friend-panel {
                 position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 300px; background: #fff; border-radius: 10px;
-                box-shadow: 0 8px 24px rgba(0,0,0,0.18);
-                font-family: system-ui, "Microsoft YaHei UI", "PingFang SC", sans-serif;
-                font-size: 13px; color: #1f2937; overflow: hidden;
+                width: 380px; background: #f8fafc; border-radius: 14px;
+                box-shadow: 0 12px 40px rgba(15,23,42,0.16), 0 0 0 1px rgba(15,23,42,0.06);
+                font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+                font-size: 13px; color: #0f172a; overflow: hidden;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 10px 12px; background: linear-gradient(135deg,#16a34a,#15803d);
+                padding: 12px 14px; background: linear-gradient(135deg,#15803d,#16a34a);
                 color: #fff; cursor: move; user-select: none;
             }
-            #cy-add-friend-panel .cy-head-title { font-weight: 600; font-size: 14px; line-height: 1.3; }
-            #cy-add-friend-panel .cy-head-sub { font-size: 11px; opacity: 0.9; margin-top: 2px; font-weight: 400; }
+            #cy-add-friend-panel .cy-head-title { font-weight: 700; font-size: 15px; line-height: 1.25; }
+            #cy-add-friend-panel .cy-head-sub { font-size: 11px; opacity: 0.92; margin-top: 3px; }
             #cy-add-friend-panel .cy-head-btn {
-                background: rgba(255,255,255,0.2); border: none; color: #fff;
-                width: 24px; height: 24px; border-radius: 4px; cursor: pointer; line-height: 1; font-size: 16px;
+                background: rgba(255,255,255,0.22); border: none; color: #fff;
+                width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+                line-height: 1; font-size: 18px; flex-shrink: 0;
             }
-            #cy-add-friend-panel .cy-body { padding: 12px; }
-            #cy-add-friend-panel .cy-row { margin-bottom: 10px; }
-            #cy-add-friend-panel .cy-label {
-                display: block; margin-bottom: 4px; color: #6b7280; font-size: 12px;
+            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.32); }
+            #cy-add-friend-panel .cy-body { padding: 14px; }
+            #cy-add-friend-panel .cy-card {
+                background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
+                padding: 10px 12px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-progress {
-                font-size: 12px; color: #374151; margin-bottom: 4px; font-weight: 600;
+                font-size: 13px; color: #1e293b; font-weight: 700; margin-bottom: 6px;
             }
             #cy-add-friend-panel .cy-stats {
-                font-size: 12px; color: #16a34a; font-weight: 600; margin-bottom: 8px;
+                font-size: 12px; color: #15803d; font-weight: 600;
+                padding: 6px 8px; background: #f0fdf4; border-radius: 8px;
+                border: 1px solid #bbf7d0; text-align: center;
             }
             #cy-add-friend-panel .cy-progress-track {
-                height: 4px; background: #e5e7eb; border-radius: 99px;
-                overflow: hidden; margin-bottom: 10px;
+                height: 6px; background: #e2e8f0; border-radius: 99px;
+                overflow: hidden; margin-top: 8px;
             }
             #cy-add-friend-panel .cy-progress-bar {
-                height: 100%; width: 0%; border-radius: 99px; background: #16a34a;
+                height: 100%; width: 0%; border-radius: 99px;
+                background: linear-gradient(90deg,#22c55e,#16a34a);
                 transition: width .35s ease;
             }
-            #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 88px; resize: vertical;
-                border: 1px solid #d1d5db; border-radius: 6px; padding: 8px;
-                font-size: 13px; line-height: 1.4; font-family: inherit;
+            #cy-add-friend-panel .cy-split-row {
+                display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch;
             }
-            #cy-add-friend-panel textarea:focus { outline: none; border-color: #16a34a; }
+            #cy-add-friend-panel .cy-talk-col { flex: 1.35; min-width: 0; }
+            #cy-add-friend-panel .cy-delay-col {
+                flex: 0.85; min-width: 0; background: #fff;
+                border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px;
+            }
+            #cy-add-friend-panel .cy-label {
+                display: block; margin-bottom: 6px; color: #475569;
+                font-size: 12px; font-weight: 600; line-height: 1.3;
+            }
+            #cy-add-friend-panel textarea {
+                width: 100%; box-sizing: border-box; min-height: 108px; resize: vertical;
+                border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 10px;
+                font-size: 13px; line-height: 1.45; font-family: inherit;
+                background: #fff; color: #0f172a;
+            }
+            #cy-add-friend-panel textarea:focus {
+                outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
+            }
+            #cy-add-friend-panel .cy-delay-box {
+                display: flex; flex-direction: column; gap: 8px; margin-top: 2px;
+            }
             #cy-add-friend-panel .cy-delay-inline {
-                display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+                display: flex; align-items: center; justify-content: center;
+                gap: 6px; flex-wrap: wrap;
             }
             #cy-add-friend-panel .cy-delay-input {
-                width: 42px; padding: 6px 4px; border: 1px solid #d1d5db; border-radius: 6px;
-                font-size: 13px; text-align: center; font-family: inherit;
+                width: 48px; padding: 7px 4px; border: 1px solid #cbd5e1; border-radius: 8px;
+                font-size: 14px; font-weight: 600; text-align: center; font-family: inherit;
+                color: #0f172a; background: #f8fafc;
             }
-            #cy-add-friend-panel .cy-delay-input:focus { outline: none; border-color: #16a34a; }
+            #cy-add-friend-panel .cy-delay-input:focus {
+                outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.12);
+            }
+            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 600; }
+            #cy-add-friend-panel .cy-delay-unit { color: #64748b; font-size: 12px; }
             #cy-add-friend-panel .cy-delay-hint {
-                font-size: 11px; color: #9ca3af; margin-top: 4px; line-height: 1.4;
+                font-size: 11px; color: #94a3b8; line-height: 1.45; text-align: center;
             }
-            #cy-add-friend-panel .cy-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+            #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+            #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
             #cy-add-friend-panel button.cy-btn {
-                flex: 1; min-width: 0; padding: 8px 10px; border: none;
-                border-radius: 6px; cursor: pointer; color: #fff; font-size: 13px;
-                font-family: inherit;
+                flex: 1; min-width: 0; padding: 10px 8px; border: none;
+                border-radius: 8px; cursor: pointer; color: #fff; font-size: 13px;
+                font-weight: 600; font-family: inherit; transition: filter .15s ease;
             }
+            #cy-add-friend-panel button.cy-btn:hover:not(:disabled) { filter: brightness(1.06); }
             #cy-add-friend-panel button.cy-btn:disabled:not(.cy-btn-stop) {
                 opacity: 0.55; cursor: not-allowed;
             }
-            #cy-add-friend-panel .cy-btn-import { background: #2563eb; flex: 1 1 100%; }
+            #cy-add-friend-panel .cy-btn-import { background: #2563eb; }
             #cy-add-friend-panel .cy-btn-clear { background: #64748b; }
             #cy-add-friend-panel .cy-btn-start { background: #16a34a; }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop {
@@ -1161,12 +1192,13 @@
                 background: #dc2626 !important; color: #fff !important; opacity: 0.5;
             }
             #cy-add-friend-panel .cy-status {
-                margin-top: 8px; padding: 8px; background: #f3f4f6; border-radius: 6px;
-                font-size: 12px; color: #4b5563; min-height: 36px; word-break: break-all; line-height: 1.5;
+                padding: 10px 11px; background: #fff; border: 1px solid #e2e8f0;
+                border-radius: 10px; font-size: 12px; color: #475569;
+                min-height: 42px; word-break: break-all; line-height: 1.55;
             }
             #cy-mini-btn {
                 position: fixed; left: 8px; bottom: 68px; z-index: 9999;
-                width: 44px; height: 44px; border-radius: 50%; border: none;
+                width: 48px; height: 48px; border-radius: 50%; border: none;
                 background: linear-gradient(135deg, #16a34a, #15803d);
                 color: #fff; cursor: pointer;
                 box-shadow: 0 4px 16px rgba(0,0,0,0.25);
@@ -1188,13 +1220,16 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.6</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.7</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
 
         const body = document.createElement('div');
         body.className = 'cy-body';
+
+        const progressCard = document.createElement('div');
+        progressCard.className = 'cy-card';
 
         elProgress = document.createElement('div');
         elProgress.className = 'cy-progress';
@@ -1211,66 +1246,86 @@
         elStats.textContent = '成功 0  ·  失败 0  ·  跳过 0';
         updateStats();
 
-        const talkRow = document.createElement('div');
-        talkRow.className = 'cy-row';
+        progressCard.append(elProgress, elStats, progressTrack);
+
+        const splitRow = document.createElement('div');
+        splitRow.className = 'cy-split-row';
+
+        const talkCol = document.createElement('div');
+        talkCol.className = 'cy-talk-col';
         const talkLabel = document.createElement('label');
         talkLabel.className = 'cy-label';
-        talkLabel.textContent = '话术（每行一条，自动轮换填备注）';
+        talkLabel.textContent = '话术（每行一条）';
         elTalk = document.createElement('textarea');
-        elTalk.placeholder = '例如：\n你好，很高兴认识你\n方便加个好友吗';
+        elTalk.placeholder = '你好，很高兴认识你\n方便加个好友吗';
         elTalk.value = loadTalks();
         elTalk.addEventListener('blur', saveTalks);
-        talkRow.append(talkLabel, elTalk);
+        talkCol.append(talkLabel, elTalk);
 
-        const delayRow = document.createElement('div');
-        delayRow.className = 'cy-row';
+        const delayCol = document.createElement('div');
+        delayCol.className = 'cy-delay-col';
         const delayLabel = document.createElement('label');
         delayLabel.className = 'cy-label';
-        delayLabel.textContent = '随机延迟范围（分钟，频繁时等待）';
+        delayLabel.textContent = '随机延迟（分钟）';
+        const delayBox = document.createElement('div');
+        delayBox.className = 'cy-delay-box';
         const delayInline = document.createElement('div');
         delayInline.className = 'cy-delay-inline';
         elDelayMin = Object.assign(document.createElement('input'), {
             type: 'number', className: 'cy-delay-input', min: '0', step: '0.5',
-            placeholder: String(DEFAULT_DELAY_MIN), title: '最小分钟数，不填默认1'
+            placeholder: String(DEFAULT_DELAY_MIN), title: '最小分钟，默认1'
         });
         const delaySep = document.createElement('span');
+        delaySep.className = 'cy-delay-sep';
         delaySep.textContent = '～';
         elDelayMax = Object.assign(document.createElement('input'), {
             type: 'number', className: 'cy-delay-input', min: '0', step: '0.5',
-            placeholder: String(DEFAULT_DELAY_MAX), title: '最大分钟数，不填默认5'
+            placeholder: String(DEFAULT_DELAY_MAX), title: '最大分钟，默认5'
         });
         const delayUnit = document.createElement('span');
+        delayUnit.className = 'cy-delay-unit';
         delayUnit.textContent = '分钟';
         elDelayMin.addEventListener('blur', saveDelaySettings);
         elDelayMax.addEventListener('blur', saveDelaySettings);
         delayInline.append(elDelayMin, delaySep, elDelayMax, delayUnit);
         const delayHint = document.createElement('div');
         delayHint.className = 'cy-delay-hint';
-        delayHint.textContent = '不填默认 1～5 分钟';
-        delayRow.append(delayLabel, delayInline, delayHint);
+        delayHint.textContent = '频繁时等待，默认 1～5 分钟';
+        delayBox.append(delayInline, delayHint);
+        delayCol.append(delayLabel, delayBox);
         loadDelaySettings();
 
-        const btnRow = document.createElement('div');
-        btnRow.className = 'cy-btns';
+        splitRow.append(talkCol, delayCol);
+
+        const btnsWrap = document.createElement('div');
+        btnsWrap.className = 'cy-btns-wrap';
+
+        const btnRow1 = document.createElement('div');
+        btnRow1.className = 'cy-btns-row';
         elBtnImport = Object.assign(document.createElement('button'), {
-            type: 'button', className: 'cy-btn cy-btn-import', textContent: '导入号码 Excel'
+            type: 'button', className: 'cy-btn cy-btn-import', textContent: '导入 Excel'
         });
         elBtnClear = Object.assign(document.createElement('button'), {
             type: 'button', className: 'cy-btn cy-btn-clear', textContent: '清空'
         });
+        btnRow1.append(elBtnImport, elBtnClear);
+
+        const btnRow2 = document.createElement('div');
+        btnRow2.className = 'cy-btns-row';
         elBtnStart = Object.assign(document.createElement('button'), {
             type: 'button', className: 'cy-btn cy-btn-start', textContent: '开始'
         });
         elBtnStop = Object.assign(document.createElement('button'), {
             type: 'button', className: 'cy-btn cy-btn-stop', textContent: '暂停', disabled: true
         });
-        btnRow.append(elBtnImport, elBtnClear, elBtnStart, elBtnStop);
+        btnRow2.append(elBtnStart, elBtnStop);
+        btnsWrap.append(btnRow1, btnRow2);
 
         elStatus = document.createElement('div');
         elStatus.className = 'cy-status';
         elStatus.textContent = '请先导入号码并填写话术';
 
-        body.append(elProgress, progressTrack, elStats, talkRow, delayRow, btnRow, elStatus);
+        body.append(progressCard, splitRow, btnsWrap, elStatus);
         panel.append(head, body);
         document.body.appendChild(panel);
 
