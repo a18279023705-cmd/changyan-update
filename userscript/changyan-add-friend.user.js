@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.12.0
+// @version      9.12.1
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -253,8 +253,31 @@
         }
     }
 
+    function normalizeDeferredLog(log) {
+        const seen = new Set();
+        const out = [];
+        for (const phone of log || []) {
+            if (!phone) continue;
+            const key = phoneKey(phone);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(phone);
+        }
+        return out;
+    }
+
     function rebuildDeferredStats() {
+        deferredPhoneLog = normalizeDeferredLog(deferredPhoneLog);
         deferredPhoneKeys = new Set(deferredPhoneLog.map(phoneKey));
+        deferCount = deferredPhoneLog.length;
+    }
+
+    /** 号码已处理完毕（成功/失败/跳过），从移后待补扫列表移除，避免重复统计 */
+    function markPhoneCompleted(phone) {
+        const key = phoneKey(phone);
+        if (!deferredPhoneKeys.has(key)) return;
+        deferredPhoneKeys.delete(key);
+        deferredPhoneLog = deferredPhoneLog.filter(p => phoneKey(p) !== key);
         deferCount = deferredPhoneLog.length;
     }
 
@@ -388,7 +411,9 @@
             successCount = data.successCount || 0;
             failCount = data.failCount || 0;
             skipCount = data.skipCount || 0;
-            deferredPhoneLog = Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : [];
+            deferredPhoneLog = normalizeDeferredLog(
+                Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : []
+            );
             rebuildDeferredStats();
             talkIndex = data.talkIndex || 0;
             updateStats();
@@ -766,6 +791,7 @@
             const result = await addFriendAttempt(phone);
 
             if (result === 'success') {
+                markPhoneCompleted(phone);
                 successCount++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
@@ -774,6 +800,7 @@
                 setStatus(`${statsLine()} | 已完成: ${phone}`);
                 await delay(1200);
             } else if (result === 'not_found') {
+                markPhoneCompleted(phone);
                 failCount++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
@@ -783,6 +810,7 @@
                 await dismissOverlaySafely();
                 await delay(1200);
             } else if (result === 'already_friend') {
+                markPhoneCompleted(phone);
                 skipCount++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
