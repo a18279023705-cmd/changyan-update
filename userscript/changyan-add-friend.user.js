@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.9.3
+// @version      9.9.4
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -1166,14 +1166,17 @@
                 transition: width .4s ease;
             }
             #cy-add-friend-panel .cy-split-row {
-                display: flex; flex-direction: row; gap: 8px; margin-bottom: 10px; align-items: stretch;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) 102px;
+                gap: 8px; margin-bottom: 10px; align-items: stretch;
             }
             #cy-add-friend-panel .cy-field-card {
                 background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
                 padding: 8px 9px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+                box-sizing: border-box; min-width: 0; overflow: hidden;
             }
-            #cy-add-friend-panel .cy-talk-col { flex: 1.35; min-width: 0; }
-            #cy-add-friend-panel .cy-delay-col { flex: 0.85; min-width: 0; }
+            #cy-add-friend-panel .cy-talk-col { min-width: 0; }
+            #cy-add-friend-panel .cy-delay-col { min-width: 0; }
             #cy-add-friend-panel .cy-label {
                 display: block; margin-bottom: 6px; color: #334155;
                 font-size: 11px; font-weight: 700; line-height: 1.2;
@@ -1189,26 +1192,27 @@
                 box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
             }
             #cy-add-friend-panel .cy-delay-box {
-                display: flex; flex-direction: column; align-items: center;
+                display: flex; flex-direction: column; align-items: stretch;
                 justify-content: center; gap: 6px; padding: 2px 0; min-height: 88px;
             }
             #cy-add-friend-panel .cy-delay-inline {
-                display: flex; align-items: center; justify-content: center; gap: 6px;
+                display: grid; grid-template-columns: 1fr auto 1fr;
+                align-items: center; gap: 4px; width: 100%;
             }
             #cy-add-friend-panel .cy-delay-input {
-                width: 52px; padding: 8px 4px; border: 1px solid #cbd5e1; border-radius: 10px;
-                font-size: 15px; font-weight: 700; text-align: center; font-family: inherit;
+                width: 100%; min-width: 0; box-sizing: border-box;
+                padding: 7px 2px; border: 1px solid #cbd5e1; border-radius: 8px;
+                font-size: 13px; font-weight: 700; text-align: center; font-family: inherit;
                 color: #0f172a; background: #f8fafc;
             }
             #cy-add-friend-panel .cy-delay-input:focus {
                 outline: none; border-color: #38bdf8; background: #fff;
                 box-shadow: 0 0 0 3px rgba(56,189,248,0.18);
             }
-            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 700; }
-            #cy-add-friend-panel .cy-delay-unit { color: #64748b; font-size: 12px; font-weight: 600; }
+            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 700; font-size: 12px; }
             #cy-add-friend-panel .cy-delay-hint {
-                font-size: 10px; color: #94a3b8; line-height: 1.4; text-align: center;
-                padding: 0 4px;
+                font-size: 9px; color: #94a3b8; line-height: 1.35; text-align: center;
+                padding: 0 2px;
             }
             #cy-add-friend-panel .cy-btns-wrap {
                 display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
@@ -1279,7 +1283,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.9.3</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.9.4</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
@@ -1346,12 +1350,9 @@
             type: 'number', className: 'cy-delay-input', min: '0', step: '0.5',
             placeholder: String(DEFAULT_DELAY_MAX), title: '最大分钟，默认5'
         });
-        const delayUnit = document.createElement('span');
-        delayUnit.className = 'cy-delay-unit';
-        delayUnit.textContent = '分钟';
         elDelayMin.addEventListener('blur', saveDelaySettings);
         elDelayMax.addEventListener('blur', saveDelaySettings);
-        delayInline.append(elDelayMin, delaySep, elDelayMax, delayUnit);
+        delayInline.append(elDelayMin, delaySep, elDelayMax);
         const delayHint = document.createElement('div');
         delayHint.className = 'cy-delay-hint';
         delayHint.textContent = '频繁时等待，默认 1～5 分钟';
