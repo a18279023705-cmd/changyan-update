@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.7
+// @version      9.8
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -133,7 +133,11 @@
 
     function updateStats() {
         if (elStats) {
-            elStats.textContent = `成功 ${successCount}  ·  失败 ${failCount}  ·  跳过 ${skipCount}`;
+            elStats.innerHTML = `
+                <span class="cy-chip cy-chip-ok"><span class="cy-chip-num">${successCount}</span><span class="cy-chip-label">成功</span></span>
+                <span class="cy-chip cy-chip-fail"><span class="cy-chip-num">${failCount}</span><span class="cy-chip-label">失败</span></span>
+                <span class="cy-chip cy-chip-skip"><span class="cy-chip-num">${skipCount}</span><span class="cy-chip-label">跳过</span></span>
+            `;
         }
         updateProgress();
         updateMiniButton();
@@ -1089,126 +1093,179 @@
         style.textContent = `
             #cy-add-friend-panel {
                 position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 380px; background: #f8fafc; border-radius: 14px;
-                box-shadow: 0 12px 40px rgba(15,23,42,0.16), 0 0 0 1px rgba(15,23,42,0.06);
+                width: 400px; background: #f1f5f9; border-radius: 16px;
+                box-shadow: 0 20px 50px rgba(15,23,42,0.14), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 12px 14px; background: linear-gradient(135deg,#15803d,#16a34a);
+                padding: 14px 16px; background: linear-gradient(145deg,#0f766e 0%,#16a34a 55%,#22c55e 100%);
                 color: #fff; cursor: move; user-select: none;
+                border-bottom: 1px solid rgba(255,255,255,0.12);
             }
-            #cy-add-friend-panel .cy-head-title { font-weight: 700; font-size: 15px; line-height: 1.25; }
-            #cy-add-friend-panel .cy-head-sub { font-size: 11px; opacity: 0.92; margin-top: 3px; }
+            #cy-add-friend-panel .cy-head-title {
+                font-weight: 700; font-size: 16px; line-height: 1.2; letter-spacing: 0.02em;
+            }
+            #cy-add-friend-panel .cy-head-sub {
+                font-size: 11px; opacity: 0.95; margin-top: 4px; color: rgba(255,255,255,0.88);
+            }
             #cy-add-friend-panel .cy-head-btn {
-                background: rgba(255,255,255,0.22); border: none; color: #fff;
-                width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
+                background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.22);
+                color: #fff; width: 30px; height: 30px; border-radius: 10px; cursor: pointer;
                 line-height: 1; font-size: 18px; flex-shrink: 0;
             }
-            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.32); }
-            #cy-add-friend-panel .cy-body { padding: 14px; }
+            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.28); }
+            #cy-add-friend-panel .cy-body { padding: 14px 14px 16px; }
             #cy-add-friend-panel .cy-card {
-                background: #fff; border: 1px solid #e2e8f0; border-radius: 10px;
-                padding: 10px 12px; margin-bottom: 12px;
+                background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+                padding: 12px 14px; margin-bottom: 12px;
+                box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+            }
+            #cy-add-friend-panel .cy-progress-head {
+                display: flex; align-items: baseline; justify-content: space-between;
+                gap: 8px; margin-bottom: 10px;
+            }
+            #cy-add-friend-panel .cy-progress-label {
+                font-size: 12px; font-weight: 600; color: #64748b;
             }
             #cy-add-friend-panel .cy-progress {
-                font-size: 13px; color: #1e293b; font-weight: 700; margin-bottom: 6px;
+                font-size: 15px; color: #0f172a; font-weight: 800; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-stats {
-                font-size: 12px; color: #15803d; font-weight: 600;
-                padding: 6px 8px; background: #f0fdf4; border-radius: 8px;
-                border: 1px solid #bbf7d0; text-align: center;
+                display: flex; gap: 6px; margin-bottom: 10px;
+            }
+            #cy-add-friend-panel .cy-chip {
+                flex: 1; display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 2px; padding: 8px 4px; border-radius: 10px;
+                border: 1px solid transparent; min-height: 52px;
+            }
+            #cy-add-friend-panel .cy-chip-num {
+                font-size: 18px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+            }
+            #cy-add-friend-panel .cy-chip-label {
+                font-size: 11px; font-weight: 600; opacity: 0.85;
+            }
+            #cy-add-friend-panel .cy-chip-ok {
+                background: #ecfdf5; border-color: #a7f3d0; color: #047857;
+            }
+            #cy-add-friend-panel .cy-chip-fail {
+                background: #fef2f2; border-color: #fecaca; color: #b91c1c;
+            }
+            #cy-add-friend-panel .cy-chip-skip {
+                background: #f8fafc; border-color: #e2e8f0; color: #475569;
             }
             #cy-add-friend-panel .cy-progress-track {
-                height: 6px; background: #e2e8f0; border-radius: 99px;
-                overflow: hidden; margin-top: 8px;
+                height: 8px; background: #e2e8f0; border-radius: 99px; overflow: hidden;
             }
             #cy-add-friend-panel .cy-progress-bar {
                 height: 100%; width: 0%; border-radius: 99px;
-                background: linear-gradient(90deg,#22c55e,#16a34a);
-                transition: width .35s ease;
+                background: linear-gradient(90deg,#34d399,#16a34a);
+                box-shadow: 0 0 8px rgba(34,197,94,0.35);
+                transition: width .4s ease;
             }
             #cy-add-friend-panel .cy-split-row {
                 display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch;
             }
-            #cy-add-friend-panel .cy-talk-col { flex: 1.35; min-width: 0; }
-            #cy-add-friend-panel .cy-delay-col {
-                flex: 0.85; min-width: 0; background: #fff;
-                border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px;
+            #cy-add-friend-panel .cy-field-card {
+                background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+                padding: 10px 11px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
             }
+            #cy-add-friend-panel .cy-talk-col { flex: 1.4; min-width: 0; }
+            #cy-add-friend-panel .cy-delay-col { flex: 0.9; min-width: 0; }
             #cy-add-friend-panel .cy-label {
-                display: block; margin-bottom: 6px; color: #475569;
-                font-size: 12px; font-weight: 600; line-height: 1.3;
+                display: block; margin-bottom: 8px; color: #334155;
+                font-size: 12px; font-weight: 700; line-height: 1.2;
             }
             #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 108px; resize: vertical;
-                border: 1px solid #cbd5e1; border-radius: 8px; padding: 9px 10px;
-                font-size: 13px; line-height: 1.45; font-family: inherit;
-                background: #fff; color: #0f172a;
+                width: 100%; box-sizing: border-box; min-height: 112px; resize: vertical;
+                border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 11px;
+                font-size: 13px; line-height: 1.5; font-family: inherit;
+                background: #f8fafc; color: #0f172a;
             }
             #cy-add-friend-panel textarea:focus {
-                outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.15);
+                outline: none; border-color: #22c55e; background: #fff;
+                box-shadow: 0 0 0 3px rgba(34,197,94,0.14);
             }
             #cy-add-friend-panel .cy-delay-box {
-                display: flex; flex-direction: column; gap: 8px; margin-top: 2px;
+                display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 10px; padding-top: 4px; min-height: 112px;
             }
             #cy-add-friend-panel .cy-delay-inline {
-                display: flex; align-items: center; justify-content: center;
-                gap: 6px; flex-wrap: wrap;
+                display: flex; align-items: center; justify-content: center; gap: 6px;
             }
             #cy-add-friend-panel .cy-delay-input {
-                width: 48px; padding: 7px 4px; border: 1px solid #cbd5e1; border-radius: 8px;
-                font-size: 14px; font-weight: 600; text-align: center; font-family: inherit;
+                width: 52px; padding: 8px 4px; border: 1px solid #cbd5e1; border-radius: 10px;
+                font-size: 15px; font-weight: 700; text-align: center; font-family: inherit;
                 color: #0f172a; background: #f8fafc;
             }
             #cy-add-friend-panel .cy-delay-input:focus {
-                outline: none; border-color: #22c55e; box-shadow: 0 0 0 3px rgba(34,197,94,0.12);
+                outline: none; border-color: #22c55e; background: #fff;
+                box-shadow: 0 0 0 3px rgba(34,197,94,0.12);
             }
-            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 600; }
-            #cy-add-friend-panel .cy-delay-unit { color: #64748b; font-size: 12px; }
+            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 700; }
+            #cy-add-friend-panel .cy-delay-unit { color: #64748b; font-size: 12px; font-weight: 600; }
             #cy-add-friend-panel .cy-delay-hint {
-                font-size: 11px; color: #94a3b8; line-height: 1.45; text-align: center;
+                font-size: 10px; color: #94a3b8; line-height: 1.4; text-align: center;
+                padding: 0 4px;
             }
-            #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+            #cy-add-friend-panel .cy-btns-wrap {
+                display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
+            }
             #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
             #cy-add-friend-panel button.cy-btn {
-                flex: 1; min-width: 0; padding: 10px 8px; border: none;
-                border-radius: 8px; cursor: pointer; color: #fff; font-size: 13px;
-                font-weight: 600; font-family: inherit; transition: filter .15s ease;
+                flex: 1; min-width: 0; padding: 11px 10px; border: none;
+                border-radius: 10px; cursor: pointer; color: #fff; font-size: 13px;
+                font-weight: 700; font-family: inherit;
+                box-shadow: 0 2px 6px rgba(15,23,42,0.12);
+                transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
             }
-            #cy-add-friend-panel button.cy-btn:hover:not(:disabled) { filter: brightness(1.06); }
+            #cy-add-friend-panel button.cy-btn:hover:not(:disabled) {
+                filter: brightness(1.05); transform: translateY(-1px);
+                box-shadow: 0 4px 10px rgba(15,23,42,0.14);
+            }
+            #cy-add-friend-panel button.cy-btn:active:not(:disabled) { transform: translateY(0); }
             #cy-add-friend-panel button.cy-btn:disabled:not(.cy-btn-stop) {
-                opacity: 0.55; cursor: not-allowed;
+                opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none;
             }
-            #cy-add-friend-panel .cy-btn-import { background: #2563eb; }
-            #cy-add-friend-panel .cy-btn-clear { background: #64748b; }
-            #cy-add-friend-panel .cy-btn-start { background: #16a34a; }
+            #cy-add-friend-panel .cy-btn-import {
+                background: linear-gradient(180deg,#3b82f6,#2563eb);
+            }
+            #cy-add-friend-panel .cy-btn-clear {
+                background: linear-gradient(180deg,#64748b,#475569);
+            }
+            #cy-add-friend-panel .cy-btn-start {
+                background: linear-gradient(180deg,#22c55e,#16a34a);
+            }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop {
-                background: #dc2626 !important; color: #fff !important;
+                background: linear-gradient(180deg,#ef4444,#dc2626) !important; color: #fff !important;
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop:disabled {
-                background: #dc2626 !important; color: #fff !important; opacity: 0.5;
+                background: #e2e8f0 !important; color: #94a3b8 !important;
+                opacity: 1 !important; box-shadow: none !important;
             }
             #cy-add-friend-panel .cy-status {
-                padding: 10px 11px; background: #fff; border: 1px solid #e2e8f0;
-                border-radius: 10px; font-size: 12px; color: #475569;
-                min-height: 42px; word-break: break-all; line-height: 1.55;
+                padding: 11px 12px; background: #fff; border: 1px solid #e2e8f0;
+                border-radius: 12px; font-size: 12px; color: #475569;
+                min-height: 44px; word-break: break-all; line-height: 1.55;
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
             }
             #cy-mini-btn {
                 position: fixed; left: 8px; bottom: 68px; z-index: 9999;
-                width: 48px; height: 48px; border-radius: 50%; border: none;
-                background: linear-gradient(135deg, #16a34a, #15803d);
+                width: 50px; height: 50px; border-radius: 50%; border: none;
+                background: linear-gradient(145deg, #16a34a, #0f766e);
                 color: #fff; cursor: pointer;
-                box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+                box-shadow: 0 6px 20px rgba(22,163,74,0.35);
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
             }
             #cy-mini-btn.cy-visible { display: flex; }
-            #cy-mini-btn.cy-running { box-shadow: 0 0 0 3px rgba(22,163,74,0.35), 0 4px 16px rgba(0,0,0,0.25); }
-            #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 700; }
-            #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 1px; opacity: 0.95; }
+            #cy-mini-btn.cy-running {
+                box-shadow: 0 0 0 4px rgba(34,197,94,0.25), 0 6px 20px rgba(22,163,74,0.35);
+            }
+            #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 800; }
+            #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.95; }
         `;
         document.head.appendChild(style);
 
@@ -1220,7 +1277,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.7</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.8</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
@@ -1231,9 +1288,15 @@
         const progressCard = document.createElement('div');
         progressCard.className = 'cy-card';
 
+        const progressHead = document.createElement('div');
+        progressHead.className = 'cy-progress-head';
+        const progressLabel = document.createElement('span');
+        progressLabel.className = 'cy-progress-label';
+        progressLabel.textContent = '执行进度';
         elProgress = document.createElement('div');
         elProgress.className = 'cy-progress';
         elProgress.textContent = '0 / 0';
+        progressHead.append(progressLabel, elProgress);
 
         const progressTrack = document.createElement('div');
         progressTrack.className = 'cy-progress-track';
@@ -1243,16 +1306,15 @@
 
         elStats = document.createElement('div');
         elStats.className = 'cy-stats';
-        elStats.textContent = '成功 0  ·  失败 0  ·  跳过 0';
         updateStats();
 
-        progressCard.append(elProgress, elStats, progressTrack);
+        progressCard.append(progressHead, elStats, progressTrack);
 
         const splitRow = document.createElement('div');
         splitRow.className = 'cy-split-row';
 
         const talkCol = document.createElement('div');
-        talkCol.className = 'cy-talk-col';
+        talkCol.className = 'cy-talk-col cy-field-card';
         const talkLabel = document.createElement('label');
         talkLabel.className = 'cy-label';
         talkLabel.textContent = '话术（每行一条）';
@@ -1263,7 +1325,7 @@
         talkCol.append(talkLabel, elTalk);
 
         const delayCol = document.createElement('div');
-        delayCol.className = 'cy-delay-col';
+        delayCol.className = 'cy-delay-col cy-field-card';
         const delayLabel = document.createElement('label');
         delayLabel.className = 'cy-label';
         delayLabel.textContent = '随机延迟（分钟）';
