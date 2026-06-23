@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.9
+// @version      9.9.1
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -1093,15 +1093,15 @@
         style.textContent = `
             #cy-add-friend-panel {
                 position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 400px; background: #f1f5f9; border-radius: 16px;
-                box-shadow: 0 20px 50px rgba(15,23,42,0.14), 0 0 0 1px rgba(15,23,42,0.05);
+                width: 300px; background: #f1f5f9; border-radius: 14px;
+                box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 14px 16px; background: linear-gradient(145deg,#0f766e 0%,#16a34a 55%,#22c55e 100%);
+                padding: 12px 14px; background: linear-gradient(145deg,#1e40af 0%,#2563eb 55%,#3b82f6 100%);
                 color: #fff; cursor: move; user-select: none;
                 border-bottom: 1px solid rgba(255,255,255,0.12);
             }
@@ -1161,36 +1161,36 @@
             }
             #cy-add-friend-panel .cy-progress-bar {
                 height: 100%; width: 0%; border-radius: 99px;
-                background: linear-gradient(90deg,#34d399,#16a34a);
-                box-shadow: 0 0 8px rgba(34,197,94,0.35);
+                background: linear-gradient(90deg,#60a5fa,#2563eb);
+                box-shadow: 0 0 8px rgba(37,99,235,0.35);
                 transition: width .4s ease;
             }
             #cy-add-friend-panel .cy-split-row {
-                display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch;
+                display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-field-card {
                 background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
                 padding: 10px 11px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
             }
-            #cy-add-friend-panel .cy-talk-col { flex: 1.4; min-width: 0; }
-            #cy-add-friend-panel .cy-delay-col { flex: 0.9; min-width: 0; }
+            #cy-add-friend-panel .cy-talk-col { flex: none; min-width: 0; }
+            #cy-add-friend-panel .cy-delay-col { flex: none; min-width: 0; }
             #cy-add-friend-panel .cy-label {
                 display: block; margin-bottom: 8px; color: #334155;
                 font-size: 12px; font-weight: 700; line-height: 1.2;
             }
             #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 112px; resize: vertical;
+                width: 100%; box-sizing: border-box; min-height: 140px; resize: vertical;
                 border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 11px;
                 font-size: 13px; line-height: 1.5; font-family: inherit;
                 background: #f8fafc; color: #0f172a;
             }
             #cy-add-friend-panel textarea:focus {
-                outline: none; border-color: #22c55e; background: #fff;
-                box-shadow: 0 0 0 3px rgba(34,197,94,0.14);
+                outline: none; border-color: #3b82f6; background: #fff;
+                box-shadow: 0 0 0 3px rgba(59,130,246,0.14);
             }
             #cy-add-friend-panel .cy-delay-box {
                 display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 10px; padding-top: 4px; min-height: 112px;
+                justify-content: center; gap: 8px; padding: 6px 0 4px; min-height: 0;
             }
             #cy-add-friend-panel .cy-delay-inline {
                 display: flex; align-items: center; justify-content: center; gap: 6px;
@@ -1201,8 +1201,8 @@
                 color: #0f172a; background: #f8fafc;
             }
             #cy-add-friend-panel .cy-delay-input:focus {
-                outline: none; border-color: #22c55e; background: #fff;
-                box-shadow: 0 0 0 3px rgba(34,197,94,0.12);
+                outline: none; border-color: #3b82f6; background: #fff;
+                box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
             }
             #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 700; }
             #cy-add-friend-panel .cy-delay-unit { color: #64748b; font-size: 12px; font-weight: 600; }
@@ -1242,27 +1242,29 @@
                 background: linear-gradient(180deg,#ef4444,#dc2626) !important; color: #fff !important;
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop:disabled {
-                background: #e2e8f0 !important; color: #94a3b8 !important;
-                opacity: 1 !important; box-shadow: none !important;
+                background: linear-gradient(180deg,#ef4444,#dc2626) !important;
+                color: rgba(255,255,255,0.75) !important;
+                opacity: 0.55 !important; cursor: not-allowed !important;
+                box-shadow: none !important; transform: none !important;
             }
             #cy-add-friend-panel .cy-status {
                 padding: 11px 12px; background: #fff; border: 1px solid #e2e8f0;
                 border-radius: 12px; font-size: 12px; color: #475569;
-                min-height: 44px; word-break: break-all; line-height: 1.55;
+                min-height: 56px; word-break: break-all; line-height: 1.55;
                 box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
             }
             #cy-mini-btn {
                 position: fixed; left: 8px; bottom: 68px; z-index: 9999;
                 width: 50px; height: 50px; border-radius: 50%; border: none;
-                background: linear-gradient(145deg, #16a34a, #0f766e);
+                background: linear-gradient(145deg, #2563eb, #1e40af);
                 color: #fff; cursor: pointer;
-                box-shadow: 0 6px 20px rgba(22,163,74,0.35);
+                box-shadow: 0 6px 20px rgba(37,99,235,0.35);
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
             }
             #cy-mini-btn.cy-visible { display: flex; }
             #cy-mini-btn.cy-running {
-                box-shadow: 0 0 0 4px rgba(34,197,94,0.25), 0 6px 20px rgba(22,163,74,0.35);
+                box-shadow: 0 0 0 4px rgba(59,130,246,0.25), 0 6px 20px rgba(37,99,235,0.35);
             }
             #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 800; }
             #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.95; }
@@ -1277,7 +1279,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.9</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.9.1</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
