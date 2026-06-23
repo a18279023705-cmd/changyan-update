@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.11.1
+// @version      9.11.2
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -124,12 +124,16 @@
         console.log('[畅言加好友·阿陌] ' + text);
     }
 
+    function completedCount() {
+        return successCount + failCount + skipCount;
+    }
+
     function updateProgress() {
         if (!elProgress) return;
         const total = phoneList.length;
-        const current = total ? Math.min(phoneIndex + 1, total) : 0;
-        const pct = total ? Math.min(100, Math.round((phoneIndex / total) * 100)) : 0;
-        elProgress.textContent = total ? `${current} / ${total}（${pct}%）` : '0 / 0';
+        const completed = completedCount();
+        const pct = total ? Math.min(100, Math.round((completed / total) * 100)) : 0;
+        elProgress.textContent = total ? `${completed} / ${total}（${pct}%）` : '0 / 0';
         if (elProgressBar) {
             elProgressBar.style.width = (pct > 0 ? Math.max(pct, 2) : 0) + '%';
         }
@@ -740,8 +744,9 @@
         if (elDelayMax) elDelayMax.disabled = true;
         if (elTalk) elTalk.disabled = true;
 
-        if (phoneIndex > 0) {
-            setStatus(`继续执行，从第 ${phoneIndex + 1}/${phoneList.length} 个开始…`);
+        if (phoneIndex > 0 || completedCount() > 0) {
+            const nextPhone = phoneList[phoneIndex] || '';
+            setStatus(`已完成 ${completedCount()}/${phoneList.length}，继续: ${nextPhone}${deferCount ? `（移后 ${deferCount} 个待补扫）` : ''}`);
         } else {
             setStatus('开始加好友（后台可继续）...');
         }
@@ -749,7 +754,7 @@
         while (phoneIndex < phoneList.length) {
             if (stopRequested) {
                 saveProgress();
-                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | ${statsLine()}`);
+                setStatus(`已暂停 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'} | ${statsLine()}`);
                 break;
             }
 
@@ -816,7 +821,7 @@
 
             if (stopRequested) {
                 saveProgress();
-                setStatus(`已暂停，进度已保存 | 下次从第 ${phoneIndex + 1}/${phoneList.length} 个继续 | ${statsLine()}`);
+                setStatus(`已暂停 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'} | ${statsLine()}`);
                 break;
             }
         }
@@ -1365,7 +1370,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.11.1</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.11.2</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
@@ -1380,7 +1385,7 @@
         progressHead.className = 'cy-progress-head';
         const progressLabel = document.createElement('span');
         progressLabel.className = 'cy-progress-label';
-        progressLabel.textContent = '执行进度';
+        progressLabel.textContent = '已完成';
         elProgress = document.createElement('div');
         elProgress.className = 'cy-progress';
         elProgress.textContent = '0 / 0';
@@ -1529,7 +1534,7 @@
     function boot() {
         createPanel();
         if (loadProgress()) {
-            setStatus(`已恢复进度，从第 ${phoneIndex + 1}/${phoneList.length} 个继续（点「继续」开始）`);
+            setStatus(`已恢复进度，已完成 ${completedCount()}/${phoneList.length}，继续: ${phoneList[phoneIndex] || '—'}（点「继续」开始）`);
         }
         loadSheetLib().then(ok => {
             if (ok && !phoneList.length) setStatus('Excel 库已就绪，可导入文件');
