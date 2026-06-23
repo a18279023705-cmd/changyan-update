@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.11.0
+// @version      9.11.1
 // @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -38,6 +38,7 @@
     let skipCount = 0;
     let deferCount = 0;
     let deferredPhoneLog = [];
+    let deferredPhoneKeys = new Set();
     let keepAliveTimer = null;
 
     let panel = null;
@@ -247,21 +248,36 @@
         }
     }
 
-    /** 频繁时把当前号移到队列末尾，phoneIndex 不变以处理下一个号 */
+    function rebuildDeferredStats() {
+        deferredPhoneKeys = new Set(deferredPhoneLog.map(phoneKey));
+        deferCount = deferredPhoneLog.length;
+    }
+
+    function clearDeferredStats() {
+        deferCount = 0;
+        deferredPhoneLog = [];
+        deferredPhoneKeys = new Set();
+    }
+
+    /** 频繁时把当前号移到队列末尾；同一号码只统计一次 */
     function recordPhoneDeferred(phone) {
-        if (!phone) return;
-        deferCount++;
+        if (!phone) return false;
+        const key = phoneKey(phone);
+        if (deferredPhoneKeys.has(key)) return false;
+        deferredPhoneKeys.add(key);
         deferredPhoneLog.push(phone);
+        deferCount = deferredPhoneLog.length;
+        return true;
     }
 
     function deferCurrentPhoneToEnd() {
-        if (phoneIndex < 0 || phoneIndex >= phoneList.length) return '';
+        if (phoneIndex < 0 || phoneIndex >= phoneList.length) return { phone: '', isNewDefer: false };
         const phone = phoneList[phoneIndex];
-        recordPhoneDeferred(phone);
+        const isNewDefer = recordPhoneDeferred(phone);
         phoneList.splice(phoneIndex, 1);
         phoneList.push(phone);
         if (phoneIndex >= phoneList.length) phoneIndex = 0;
-        return phone;
+        return { phone, isNewDefer };
     }
 
     function parseDelayMinutes(raw, fallback) {
@@ -367,8 +383,8 @@
             successCount = data.successCount || 0;
             failCount = data.failCount || 0;
             skipCount = data.skipCount || 0;
-            deferCount = data.deferCount || 0;
             deferredPhoneLog = Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : [];
+            rebuildDeferredStats();
             talkIndex = data.talkIndex || 0;
             updateStats();
             updateStartButtonLabel();
@@ -707,8 +723,7 @@
             skipCount = 0;
             talkIndex = 0;
             rateLimitRoundCount = 0;
-            deferCount = 0;
-            deferredPhoneLog = [];
+            clearDeferredStats();
             clearProgress();
         }
 
@@ -774,7 +789,7 @@
                     await waitRateLimitCooldown(phone);
                     rateLimitRoundCount = 0;
                 } else {
-                    const deferred = deferCurrentPhoneToEnd();
+                    const { phone: deferred, isNewDefer } = deferCurrentPhoneToEnd();
                     rateLimitRoundCount++;
                     if (rateLimitRoundCount >= phoneList.length) {
                         rateLimitRoundCount = 0;
@@ -782,7 +797,11 @@
                         await waitRateLimitCooldown(deferred);
                     } else {
                         const nextPhone = phoneList[phoneIndex] || '';
-                        setStatus(`频繁: ${deferred} 已移到最后（移后累计 ${deferCount}）→ ${nextPhone}`);
+                        if (isNewDefer) {
+                            setStatus(`频繁: ${deferred} 已移到最后（移后 ${deferCount} 个号）→ ${nextPhone}`);
+                        } else {
+                            setStatus(`频繁: ${deferred} 已在移后列表，再次移到最后 → ${nextPhone}`);
+                        }
                         updateStats();
                         await delay(800);
                     }
@@ -803,7 +822,7 @@
         }
 
         if (!stopRequested && phoneIndex >= phoneList.length) {
-            setStatus(`全部完成 | ${statsLine()} | 移后记录 ${deferredPhoneLog.length} 条`);
+            setStatus(`全部完成 | ${statsLine()}`);
             clearProgress();
         }
 
@@ -835,8 +854,7 @@
         skipCount = 0;
         talkIndex = 0;
         rateLimitRoundCount = 0;
-        deferCount = 0;
-        deferredPhoneLog = [];
+        clearDeferredStats();
         clearProgress();
         updateStats();
         updateStartButtonLabel();
@@ -1131,8 +1149,7 @@
                 skipCount = 0;
                 talkIndex = 0;
                 rateLimitRoundCount = 0;
-                deferCount = 0;
-                deferredPhoneLog = [];
+                clearDeferredStats();
                 clearProgress();
                 saveProgress();
                 updateStats();
@@ -1348,7 +1365,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.11</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.11.1</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
