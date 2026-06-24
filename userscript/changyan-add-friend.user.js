@@ -1,26 +1,27 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.13.1
+// @version      9.14.0
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
 // @run-at       document-end
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
-// @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
-// @downloadURL  https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.user.js
+// @updateURL    https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.meta.js
+// @downloadURL  https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.user.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.13.1';
+    const SCRIPT_VERSION = '9.14.0';
     const VERSION_URL =
-        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.version.txt';
+        'https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.version.txt';
     const MIN_VERSION_URL =
-        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.min-version.txt';
-    const DOWNLOAD_PAGE = 'https://github.com/a18279023705-cmd/changyan-update/tree/main/userscript';
+        'https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.min-version.txt';
+    const DOWNLOAD_URL =
+        'https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.user.js';
     const BUILTIN_DELAY_MIN_SEC = 60;
     const BUILTIN_DELAY_MAX_SEC = 90;
 
@@ -263,7 +264,7 @@
             `当前版本 <b>${SCRIPT_VERSION}</b>，最低要求 <b>${requiredVersion}</b>，最新版本 <b>${target}</b>。<br>` +
             '请在 Tampermonkey（油猴）中打开「畅言加好友」脚本，点击「检查更新」或重新安装最新版。' +
             '</div>' +
-            `<a href="${DOWNLOAD_PAGE}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 14px;` +
+            `<a href="${DOWNLOAD_URL}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 14px;` +
             'background:#0ea5e9;color:#fff;border-radius:10px;text-decoration:none;font-weight:700;">打开更新页面</a></div>';
         document.body.appendChild(blocker);
 
@@ -292,6 +293,31 @@
             console.warn('[畅言加好友] 版本检查失败，继续使用本地版本', e);
         }
         return true;
+    }
+
+    async function notifyIfUpdateAvailable() {
+        try {
+            const resp = await fetch(VERSION_URL + '?t=' + Date.now(), { cache: 'no-store' });
+            const latest = ((await resp.text()) || '').trim();
+            if (latest && compareVersion(SCRIPT_VERSION, latest) < 0) {
+                alert(
+                    `畅言加好友有新版本 ${latest}（当前 ${SCRIPT_VERSION}）\n\n` +
+                        '请打开 Tampermonkey → 找到本脚本 → 点击「检查更新」\n' +
+                        '若仍无提示，请用浏览器打开以下链接重新安装：\n' +
+                        DOWNLOAD_URL
+                );
+            }
+        } catch (e) {}
+    }
+
+    function lockPanelPosition() {
+        if (!panel) return;
+        panel.style.position = 'fixed';
+        panel.style.top = '0';
+        panel.style.right = '0';
+        panel.style.left = 'auto';
+        panel.style.bottom = 'auto';
+        panel.style.margin = '0';
     }
 
     function detectRateLimit() {
@@ -1240,17 +1266,18 @@
         const style = document.createElement('style');
         style.textContent = `
             #cy-add-friend-panel {
-                position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 360px; background: #f1f5f9; border-radius: 14px;
+                position: fixed; top: 0; right: 0; z-index: 99999;
+                width: 360px; background: #f1f5f9; border-radius: 0 0 0 14px;
                 box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
+                margin: 0;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
                 padding: 12px 14px; background: linear-gradient(145deg,#0284c7 0%,#0ea5e9 55%,#38bdf8 100%);
-                color: #fff; cursor: move; user-select: none;
+                color: #fff; user-select: none;
                 border-bottom: 1px solid rgba(255,255,255,0.12);
             }
             #cy-add-friend-panel .cy-head-title {
@@ -1526,25 +1553,8 @@
             minimizePanel();
         };
 
-        const drag = { active: false, x: 0, y: 0, left: 0, top: 0 };
-        head.addEventListener('mousedown', e => {
-            if (e.target.closest('button')) return;
-            drag.active = true;
-            drag.x = e.clientX;
-            drag.y = e.clientY;
-            const rect = panel.getBoundingClientRect();
-            drag.left = rect.left;
-            drag.top = rect.top;
-            panel.style.right = 'auto';
-            panel.style.left = drag.left + 'px';
-            panel.style.top = drag.top + 'px';
-        });
-        document.addEventListener('mousemove', e => {
-            if (!drag.active) return;
-            panel.style.left = drag.left + (e.clientX - drag.x) + 'px';
-            panel.style.top = drag.top + (e.clientY - drag.y) + 'px';
-        });
-        document.addEventListener('mouseup', () => { drag.active = false; });
+        lockPanelPosition();
+        window.addEventListener('resize', lockPanelPosition);
 
         setStatus('面板已就绪，可最小化后台运行');
     }
@@ -1553,6 +1563,8 @@
         const ok = await checkForceUpdate();
         if (!ok) return;
         createPanel();
+        lockPanelPosition();
+        notifyIfUpdateAvailable();
         if (loadProgress()) {
             setStatus(`已恢复进度，已完成 ${completedCount()}/${phoneList.length}，继续: ${phoneList[phoneIndex] || '—'}（点「继续」开始）`);
         }
@@ -1567,6 +1579,7 @@
 
     setInterval(() => {
         if (!document.getElementById('cy-add-friend-panel')) createPanel();
+        lockPanelPosition();
         if (running && !keepAliveTimer) startKeepAlive();
     }, 4000);
 
