@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.12.1
-// @description  畅言加好友阿陌专用，完善重试/跳过/已是好友判定逻辑
+// @version      9.13.0
+// @description  畅言加好友阿陌专用，内置60-90秒频繁等待，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,11 +15,17 @@
 (function () {
     'use strict';
 
+    const SCRIPT_VERSION = '9.13.0';
+    const VERSION_URL =
+        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.version.txt';
+    const MIN_VERSION_URL =
+        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.min-version.txt';
+    const DOWNLOAD_PAGE = 'https://github.com/a18279023705-cmd/changyan-update/tree/main/userscript';
+    const BUILTIN_DELAY_MIN_SEC = 60;
+    const BUILTIN_DELAY_MAX_SEC = 90;
+
     const STORAGE_KEY = 'changyan_add_friend_talks';
     const PROGRESS_STORAGE_KEY = 'changyan_add_friend_progress';
-    const DELAY_STORAGE_KEY = 'changyan_add_friend_delay';
-    const DEFAULT_DELAY_MIN = 1;
-    const DEFAULT_DELAY_MAX = 5;
     const XLSX_CDN_LIST = [
         'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
         'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -53,9 +59,8 @@
     let elBtnStop = null;
     let elBtnImport = null;
     let elBtnClear = null;
-    let elDelayMin = null;
-    let elDelayMax = null;
     let elFileXlsx = null;
+    let elShell = null;
 
     function isSheetReady() {
         return typeof XLSX !== 'undefined' && typeof XLSX.read === 'function';
@@ -120,7 +125,11 @@
     }
 
     function setStatus(text) {
-        if (elStatus) elStatus.textContent = text;
+        if (elStatus) {
+            elStatus.textContent = text;
+            if (/随机等待|频繁限制/.test(text)) elStatus.classList.add('cy-waiting');
+            else elStatus.classList.remove('cy-waiting');
+        }
         updateMiniButton();
         console.log('[畅言加好友·阿陌] ' + text);
     }
@@ -173,15 +182,15 @@
     }
 
     function minimizePanel() {
-        if (!panel || !elMiniBtn) return;
-        panel.classList.add('cy-minimized');
+        if (!elShell || !elMiniBtn) return;
+        elShell.classList.add('cy-minimized');
         elMiniBtn.classList.add('cy-visible');
         updateMiniButton();
     }
 
     function restorePanel() {
-        if (!panel || !elMiniBtn) return;
-        panel.classList.remove('cy-minimized');
+        if (!elShell || !elMiniBtn) return;
+        elShell.classList.remove('cy-minimized');
         elMiniBtn.classList.remove('cy-visible');
     }
 
@@ -218,6 +227,74 @@
         return (document.body && document.body.innerText) || '';
     }
 
+    function parseVersionParts(version) {
+        return String(version || '0')
+            .trim()
+            .split('.')
+            .map(part => parseInt(part, 10) || 0);
+    }
+
+    function compareVersion(a, b) {
+        const pa = parseVersionParts(a);
+        const pb = parseVersionParts(b);
+        const len = Math.max(pa.length, pb.length);
+        for (let i = 0; i < len; i++) {
+            const da = pa[i] || 0;
+            const db = pb[i] || 0;
+            if (da !== db) return da - db;
+        }
+        return 0;
+    }
+
+    function showUpdateBlocker(requiredVersion, latestVersion) {
+        const target = latestVersion || requiredVersion || SCRIPT_VERSION;
+        const id = 'cy-add-friend-update-blocker';
+        if (document.getElementById(id)) return;
+
+        const blocker = document.createElement('div');
+        blocker.id = id;
+        blocker.style.cssText =
+            'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,0.72);' +
+            'display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+        blocker.innerHTML =
+            '<div style="max-width:420px;background:#fff;border-radius:16px;padding:22px 20px;' +
+            'font-family:Microsoft YaHei,Segoe UI,sans-serif;color:#0f172a;box-shadow:0 24px 60px rgba(0,0,0,0.25);">' +
+            '<div style="font-size:18px;font-weight:800;margin-bottom:10px;">脚本版本过低，已强制停用</div>' +
+            '<div style="font-size:14px;line-height:1.7;color:#475569;margin-bottom:14px;">' +
+            `当前版本 <b>${SCRIPT_VERSION}</b>，最低要求 <b>${requiredVersion}</b>，最新版本 <b>${target}</b>。<br>` +
+            '请在 Tampermonkey（油猴）中打开「畅言加好友」脚本，点击「检查更新」或重新安装最新版。' +
+            '</div>' +
+            `<a href="${DOWNLOAD_PAGE}" target="_blank" rel="noopener" style="display:inline-block;padding:10px 14px;` +
+            'background:#0ea5e9;color:#fff;border-radius:10px;text-decoration:none;font-weight:700;">打开更新页面</a></div>';
+        document.body.appendChild(blocker);
+
+        alert(
+            `畅言加好友脚本需更新\n\n当前：${SCRIPT_VERSION}\n最低：${requiredVersion}\n最新：${target}\n\n请在 Tampermonkey 中检查更新后刷新页面。`
+        );
+    }
+
+    async function checkForceUpdate() {
+        try {
+            const cacheBust = '?t=' + Date.now();
+            const [verResp, minResp] = await Promise.all([
+                fetch(VERSION_URL + cacheBust, { cache: 'no-store' }),
+                fetch(MIN_VERSION_URL + cacheBust, { cache: 'no-store' }),
+            ]);
+            const latest = ((await verResp.text()) || '').trim();
+            const minVer = ((await minResp.text()) || '').trim();
+            if (minVer && compareVersion(SCRIPT_VERSION, minVer) < 0) {
+                showUpdateBlocker(minVer, latest || minVer);
+                return false;
+            }
+            if (latest && compareVersion(SCRIPT_VERSION, latest) < 0) {
+                console.warn('[畅言加好友] 有新版本:', latest);
+            }
+        } catch (e) {
+            console.warn('[畅言加好友] 版本检查失败，继续使用本地版本', e);
+        }
+        return true;
+    }
+
     function detectRateLimit() {
         const text = getVisibleText();
         return (
@@ -239,18 +316,19 @@
 
     async function waitRateLimitCooldown(phone) {
         await dismissOverlaySafely();
-        const range = getDelayRangeMinutes();
-        const totalMs = randomDelayMs(range.min, range.max);
+        const totalMs = randomDelaySeconds(BUILTIN_DELAY_MIN_SEC, BUILTIN_DELAY_MAX_SEC);
         const endAt = Date.now() + totalMs;
         while (Date.now() < endAt) {
             if (stopRequested) return;
             const leftSec = Math.ceil((endAt - Date.now()) / 1000);
-            const minPart = Math.floor(leftSec / 60);
-            const secPart = leftSec % 60;
-            const timeText = minPart > 0 ? `${minPart}分${String(secPart).padStart(2, '0')}秒` : `${secPart}秒`;
-            setStatus(`频率限制，随机等待 ${timeText} 后重试（${range.min}-${range.max} 分钟）: ${phone}`);
+            setStatus(`频繁限制 · 随机等待 ${leftSec} 秒后继续（内置 ${BUILTIN_DELAY_MIN_SEC}-${BUILTIN_DELAY_MAX_SEC} 秒） · ${phone}`);
             await delay(1000);
         }
+    }
+
+    function randomDelaySeconds(minSec, maxSec) {
+        if (minSec >= maxSec) return minSec * 1000;
+        return (minSec + Math.random() * (maxSec - minSec)) * 1000;
     }
 
     function normalizeDeferredLog(log) {
@@ -306,44 +384,6 @@
         phoneList.push(phone);
         if (phoneIndex >= phoneList.length) phoneIndex = 0;
         return { phone, isNewDefer };
-    }
-
-    function parseDelayMinutes(raw, fallback) {
-        const s = String(raw ?? '').trim();
-        if (!s) return fallback;
-        const n = parseFloat(s);
-        return Number.isFinite(n) && n >= 0 ? n : fallback;
-    }
-
-    function getDelayRangeMinutes() {
-        let minM = parseDelayMinutes(elDelayMin && elDelayMin.value, DEFAULT_DELAY_MIN);
-        let maxM = parseDelayMinutes(elDelayMax && elDelayMax.value, DEFAULT_DELAY_MAX);
-        if (minM > maxM) [minM, maxM] = [maxM, minM];
-        return { min: minM, max: maxM };
-    }
-
-    function randomDelayMs(minM, maxM) {
-        const minMs = minM * 60 * 1000;
-        const maxMs = maxM * 60 * 1000;
-        if (minMs >= maxMs) return minMs;
-        return minMs + Math.random() * (maxMs - minMs);
-    }
-
-    function saveDelaySettings() {
-        try {
-            const range = getDelayRangeMinutes();
-            localStorage.setItem(DELAY_STORAGE_KEY, JSON.stringify(range));
-        } catch (e) {}
-    }
-
-    function loadDelaySettings() {
-        try {
-            const raw = localStorage.getItem(DELAY_STORAGE_KEY);
-            if (!raw) return;
-            const data = JSON.parse(raw);
-            if (elDelayMin && data.min != null) elDelayMin.value = data.min;
-            if (elDelayMax && data.max != null) elDelayMax.value = data.max;
-        } catch (e) {}
     }
 
     function parseTalkList(text) {
@@ -766,8 +806,6 @@
         elBtnStop.disabled = false;
         elBtnImport.disabled = true;
         if (elBtnClear) elBtnClear.disabled = true;
-        if (elDelayMin) elDelayMin.disabled = true;
-        if (elDelayMax) elDelayMax.disabled = true;
         if (elTalk) elTalk.disabled = true;
 
         if (phoneIndex > 0 || completedCount() > 0) {
@@ -866,8 +904,6 @@
         elBtnStop.disabled = true;
         elBtnImport.disabled = false;
         if (elBtnClear) elBtnClear.disabled = false;
-        if (elDelayMin) elDelayMin.disabled = false;
-        if (elDelayMax) elDelayMax.disabled = false;
         if (elTalk) elTalk.disabled = false;
         updateStartButtonLabel();
         updateMiniButton();
@@ -1200,17 +1236,24 @@
     }
 
     function createPanel() {
-        if (document.getElementById('cy-add-friend-panel')) return;
+        if (document.getElementById('cy-add-friend-shell')) return;
 
         const style = document.createElement('style');
         style.textContent = `
-            #cy-add-friend-panel {
+            #cy-add-friend-shell {
                 position: fixed; top: 16px; right: 16px; z-index: 99999;
-                width: 360px; background: #f1f5f9; border-radius: 14px;
-                box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
+                padding: 8px; border-radius: 18px;
+                background: linear-gradient(145deg, #dbeafe 0%, #f8fafc 100%);
+                border: 2px solid #38bdf8;
+                box-shadow: 0 20px 48px rgba(14,165,233,0.22), inset 0 0 0 1px rgba(255,255,255,0.65);
+            }
+            #cy-add-friend-panel {
+                position: relative; width: 360px; background: #f1f5f9; border-radius: 14px;
+                box-shadow: 0 8px 24px rgba(15,23,42,0.08), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
             }
+            #cy-add-friend-shell.cy-minimized { display: none !important; }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
@@ -1282,9 +1325,7 @@
                 transition: width .4s ease;
             }
             #cy-add-friend-panel .cy-split-row {
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) 112px;
-                gap: 8px; margin-bottom: 10px; align-items: stretch;
+                display: block; margin-bottom: 10px;
             }
             #cy-add-friend-panel .cy-field-card {
                 background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
@@ -1292,7 +1333,6 @@
                 box-sizing: border-box; min-width: 0; overflow: hidden;
             }
             #cy-add-friend-panel .cy-talk-col { min-width: 0; }
-            #cy-add-friend-panel .cy-delay-col { min-width: 0; }
             #cy-add-friend-panel .cy-label {
                 display: block; margin-bottom: 6px; color: #334155;
                 font-size: 11px; font-weight: 700; line-height: 1.2;
@@ -1306,29 +1346,6 @@
             #cy-add-friend-panel textarea:focus {
                 outline: none; border-color: #38bdf8; background: #fff;
                 box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
-            }
-            #cy-add-friend-panel .cy-delay-box {
-                display: flex; flex-direction: column; align-items: stretch;
-                justify-content: center; gap: 6px; padding: 2px 0; min-height: 88px;
-            }
-            #cy-add-friend-panel .cy-delay-inline {
-                display: grid; grid-template-columns: 1fr auto 1fr;
-                align-items: center; gap: 4px; width: 100%;
-            }
-            #cy-add-friend-panel .cy-delay-input {
-                width: 100%; min-width: 0; box-sizing: border-box;
-                padding: 7px 2px; border: 1px solid #cbd5e1; border-radius: 8px;
-                font-size: 13px; font-weight: 700; text-align: center; font-family: inherit;
-                color: #0f172a; background: #f8fafc;
-            }
-            #cy-add-friend-panel .cy-delay-input:focus {
-                outline: none; border-color: #38bdf8; background: #fff;
-                box-shadow: 0 0 0 3px rgba(56,189,248,0.18);
-            }
-            #cy-add-friend-panel .cy-delay-sep { color: #94a3b8; font-weight: 700; font-size: 12px; }
-            #cy-add-friend-panel .cy-delay-hint {
-                font-size: 9px; color: #94a3b8; line-height: 1.35; text-align: center;
-                padding: 0 2px;
             }
             #cy-add-friend-panel .cy-btns-wrap {
                 display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
@@ -1368,10 +1385,13 @@
                 box-shadow: none !important; transform: none !important;
             }
             #cy-add-friend-panel .cy-status {
-                padding: 14px 14px; background: #fff; border: 1px solid #e2e8f0;
+                padding: 14px 14px; background: #fff; border: 2px solid #bae6fd;
                 border-radius: 12px; font-size: 14px; color: #334155;
                 min-height: 72px; word-break: break-all; line-height: 1.65;
                 font-weight: 500; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+            }
+            #cy-add-friend-panel .cy-status.cy-waiting {
+                color: #0369a1; font-weight: 700; background: #f0f9ff;
             }
             #cy-mini-btn {
                 position: fixed; left: 8px; bottom: 68px; z-index: 9999;
@@ -1399,7 +1419,7 @@
         head.innerHTML = `
             <div>
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版9.12</div>
+                <div class="cy-head-sub">阿陌专用 · 后台稳定版 ${SCRIPT_VERSION}</div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
@@ -1445,38 +1465,7 @@
         elTalk.value = loadTalks();
         elTalk.addEventListener('blur', saveTalks);
         talkCol.append(talkLabel, elTalk);
-
-        const delayCol = document.createElement('div');
-        delayCol.className = 'cy-delay-col cy-field-card';
-        const delayLabel = document.createElement('label');
-        delayLabel.className = 'cy-label';
-        delayLabel.textContent = '随机延迟（分钟）';
-        const delayBox = document.createElement('div');
-        delayBox.className = 'cy-delay-box';
-        const delayInline = document.createElement('div');
-        delayInline.className = 'cy-delay-inline';
-        elDelayMin = Object.assign(document.createElement('input'), {
-            type: 'number', className: 'cy-delay-input', min: '0', step: '0.5',
-            placeholder: String(DEFAULT_DELAY_MIN), title: '最小分钟，默认1'
-        });
-        const delaySep = document.createElement('span');
-        delaySep.className = 'cy-delay-sep';
-        delaySep.textContent = '～';
-        elDelayMax = Object.assign(document.createElement('input'), {
-            type: 'number', className: 'cy-delay-input', min: '0', step: '0.5',
-            placeholder: String(DEFAULT_DELAY_MAX), title: '最大分钟，默认5'
-        });
-        elDelayMin.addEventListener('blur', saveDelaySettings);
-        elDelayMax.addEventListener('blur', saveDelaySettings);
-        delayInline.append(elDelayMin, delaySep, elDelayMax);
-        const delayHint = document.createElement('div');
-        delayHint.className = 'cy-delay-hint';
-        delayHint.textContent = '频繁时移到最后换号，默认等待 1～5 分钟';
-        delayBox.append(delayInline, delayHint);
-        delayCol.append(delayLabel, delayBox);
-        loadDelaySettings();
-
-        splitRow.append(talkCol, delayCol);
+        splitRow.append(talkCol);
 
         const btnsWrap = document.createElement('div');
         btnsWrap.className = 'cy-btns-wrap';
@@ -1508,7 +1497,11 @@
 
         body.append(progressCard, splitRow, btnsWrap, elStatus);
         panel.append(head, body);
-        document.body.appendChild(panel);
+
+        elShell = document.createElement('div');
+        elShell.id = 'cy-add-friend-shell';
+        elShell.appendChild(panel);
+        document.body.appendChild(elShell);
 
         elMiniBtn = document.createElement('button');
         elMiniBtn.id = 'cy-mini-btn';
@@ -1543,31 +1536,33 @@
             drag.active = true;
             drag.x = e.clientX;
             drag.y = e.clientY;
-            const rect = panel.getBoundingClientRect();
+            const rect = elShell.getBoundingClientRect();
             drag.left = rect.left;
             drag.top = rect.top;
-            panel.style.right = 'auto';
-            panel.style.left = drag.left + 'px';
-            panel.style.top = drag.top + 'px';
+            elShell.style.right = 'auto';
+            elShell.style.left = drag.left + 'px';
+            elShell.style.top = drag.top + 'px';
         });
         document.addEventListener('mousemove', e => {
             if (!drag.active) return;
-            panel.style.left = drag.left + (e.clientX - drag.x) + 'px';
-            panel.style.top = drag.top + (e.clientY - drag.y) + 'px';
+            elShell.style.left = drag.left + (e.clientX - drag.x) + 'px';
+            elShell.style.top = drag.top + (e.clientY - drag.y) + 'px';
         });
         document.addEventListener('mouseup', () => { drag.active = false; });
 
         setStatus('面板已就绪，可最小化后台运行');
     }
 
-    function boot() {
+    async function boot() {
+        const ok = await checkForceUpdate();
+        if (!ok) return;
         createPanel();
         if (loadProgress()) {
             setStatus(`已恢复进度，已完成 ${completedCount()}/${phoneList.length}，继续: ${phoneList[phoneIndex] || '—'}（点「继续」开始）`);
         }
-        loadSheetLib().then(ok => {
-            if (ok && !phoneList.length) setStatus('Excel 库已就绪，可导入文件');
-            else if (!ok) setStatus('Excel 库加载失败，请刷新页面');
+        loadSheetLib().then(sheetOk => {
+            if (sheetOk && !phoneList.length) setStatus('Excel 库已就绪，可导入文件');
+            else if (!sheetOk) setStatus('Excel 库加载失败，请刷新页面');
         });
     }
 
