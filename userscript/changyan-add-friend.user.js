@@ -1,27 +1,26 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.14.1
+// @version      9.15.0
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
 // @run-at       document-end
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
-// @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
-// @downloadURL  https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.user.js
+// @updateURL    https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.meta.js
+// @downloadURL  https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.14.1';
-    const VERSION_URL =
-        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.version.txt';
-    const MIN_VERSION_URL =
-        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.min-version.txt';
-    const DOWNLOAD_URL =
-        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.user.js';
+    const SCRIPT_VERSION = '9.15.0';
+    const RELEASE_BASE =
+        'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
+    const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
+    const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
+    const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
     const BUILTIN_DELAY_MIN_SEC = 60;
     const BUILTIN_DELAY_MAX_SEC = 90;
 
