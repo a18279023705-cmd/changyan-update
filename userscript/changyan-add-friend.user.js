@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.4
+// @version      9.15.5
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,14 +15,14 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.4';
+    const SCRIPT_VERSION = '9.15.5';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
 
-    /** 频繁限制与 UI 操作等待保持原速；号与号间隔 + 轮询逻辑可继续压缩 */
+    /** 频繁限制与 UI 上限不变；弹窗先最短稳定等待，再轮询（不快不慢） */
     const PACE = {
         rateLimitMinSec: 60,
         rateLimitMaxSec: 90,
@@ -33,10 +33,14 @@
         afterRetryMs: 750,
         searchWaitMs: 380,
         actionWaitMs: 600,
+        actionSettleMs: 320,
         confirmWaitMs: 500,
+        confirmSettleMs: 280,
         panelCloseMs: 450,
+        panelCloseMinMs: 300,
         panelCloseRetryMs: 400,
         remarkCheckMs: 200,
+        remarkSettleMs: 150,
         confirmClickMs: 400,
         typingMs: 80,
         typingAfterMs: 100,
@@ -549,8 +553,24 @@
         setInputValue(el, '');
     }
 
+    function isInputReady(input) {
+        if (!input || !document.contains(input)) return false;
+        if (input.disabled || input.readOnly) return false;
+        const r = input.getBoundingClientRect();
+        return r.width > 4 && r.height > 4;
+    }
+
+    function readInputValue(input) {
+        return input.tagName.toLowerCase() === 'div'
+            ? input.textContent.trim()
+            : input.value.trim();
+    }
+
     async function setInputValueAndEnter(input, value) {
+        input.focus();
+        await delay(PACE.typingMs);
         setInputValue(input, value);
+        await delay(PACE.typingMs);
         ['keydown', 'keypress', 'keyup'].forEach(type => {
             input.dispatchEvent(new KeyboardEvent(type, {
                 key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
@@ -673,6 +693,7 @@
         );
         if (scopedClose) {
             scopedClose.click();
+            await delay(PACE.panelCloseMinMs);
             return waitPanelClosed();
         }
 
@@ -697,6 +718,7 @@
                 return (ra.top + ra.left) - (rb.top + rb.left);
             });
             (candidates[0].closest('button') || candidates[0]).click();
+            await delay(PACE.panelCloseMinMs);
             return waitPanelClosed();
         }
 
@@ -719,6 +741,7 @@
 
         await closeExistingFriendPanel(friendPanel);
         if (findExistingFriendPanel()) {
+            await delay(PACE.panelCloseRetryMs);
             await closeExistingFriendPanel();
         }
         if (findExistingFriendPanel()) {
@@ -773,6 +796,7 @@
     }
 
     async function waitForRemarkInput(phone) {
+        await delay(PACE.actionSettleMs);
         const endAt = Date.now() + PACE.actionWaitMs;
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound();
@@ -781,32 +805,36 @@
                 return await handleAlreadyFriend(phone, false);
             }
             const input = findRemarkInputSync();
-            if (input) return input;
+            if (input && isInputReady(input)) return input;
             await delay(PACE.pollFastMs);
         }
         return null;
     }
 
+    async function fillRemarkInput(input, msg) {
+        input.focus();
+        await delay(PACE.typingMs);
+        setInputValue(input, msg);
+        await delay(PACE.remarkSettleMs);
+        if (readInputValue(input) !== msg) {
+            setInputValue(input, msg);
+            await delay(PACE.remarkCheckMs);
+        }
+    }
+
     async function waitConfirmSettled() {
-        await pollUntil(
-            () => !isAddFriendModalOpen() || detectRateLimit() || detectUserNotFound(),
-            PACE.confirmWaitMs
-        );
+        await delay(PACE.confirmSettleMs);
+        const endAt = Date.now() + PACE.confirmWaitMs;
+        while (Date.now() < endAt) {
+            if (!isAddFriendModalOpen() || detectRateLimit() || detectUserNotFound()) break;
+            await delay(PACE.pollFastMs);
+        }
     }
 
     async function checkRemarkFilled(input, expected) {
-        const endAt = Date.now() + PACE.remarkCheckMs;
-        while (Date.now() < endAt) {
-            const val = input.tagName.toLowerCase() === 'div'
-                ? input.textContent.trim()
-                : input.value.trim();
-            if (val === expected) return true;
-            await delay(50);
-        }
-        const val = input.tagName.toLowerCase() === 'div'
-            ? input.textContent.trim()
-            : input.value.trim();
-        return val === expected;
+        if (readInputValue(input) === expected) return true;
+        await delay(PACE.remarkCheckMs);
+        return readInputValue(input) === expected;
     }
 
     async function clickConfirmComplete() {
@@ -871,7 +899,7 @@
         if (talkList.length === 0) return 'retry';
 
         const msg = talkList[talkIndex++ % talkList.length];
-        setInputValue(remarkResult, msg);
+        await fillRemarkInput(remarkResult, msg);
 
         const ok = await checkRemarkFilled(remarkResult, msg);
         if (!ok) return 'retry';
@@ -882,6 +910,7 @@
         outcome = checkRateLimitOrNotFound();
         if (outcome) return outcome;
 
+        await delay(PACE.typingAfterMs);
         clearSearchInput(input);
         setStatus('添加成功: ' + phone);
         return 'success';
