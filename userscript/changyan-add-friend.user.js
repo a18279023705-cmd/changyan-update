@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.13.0
+// @version      9.13.1
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.13.0';
+    const SCRIPT_VERSION = '9.13.1';
     const VERSION_URL =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.version.txt';
     const MIN_VERSION_URL =
@@ -60,7 +60,6 @@
     let elBtnImport = null;
     let elBtnClear = null;
     let elFileXlsx = null;
-    let elShell = null;
 
     function isSheetReady() {
         return typeof XLSX !== 'undefined' && typeof XLSX.read === 'function';
@@ -182,15 +181,15 @@
     }
 
     function minimizePanel() {
-        if (!elShell || !elMiniBtn) return;
-        elShell.classList.add('cy-minimized');
+        if (!panel || !elMiniBtn) return;
+        panel.classList.add('cy-minimized');
         elMiniBtn.classList.add('cy-visible');
         updateMiniButton();
     }
 
     function restorePanel() {
-        if (!elShell || !elMiniBtn) return;
-        elShell.classList.remove('cy-minimized');
+        if (!panel || !elMiniBtn) return;
+        panel.classList.remove('cy-minimized');
         elMiniBtn.classList.remove('cy-visible');
     }
 
@@ -1236,24 +1235,17 @@
     }
 
     function createPanel() {
-        if (document.getElementById('cy-add-friend-shell')) return;
+        if (document.getElementById('cy-add-friend-panel')) return;
 
         const style = document.createElement('style');
         style.textContent = `
-            #cy-add-friend-shell {
-                position: fixed; top: 16px; right: 16px; z-index: 99999;
-                padding: 8px; border-radius: 18px;
-                background: linear-gradient(145deg, #dbeafe 0%, #f8fafc 100%);
-                border: 2px solid #38bdf8;
-                box-shadow: 0 20px 48px rgba(14,165,233,0.22), inset 0 0 0 1px rgba(255,255,255,0.65);
-            }
             #cy-add-friend-panel {
-                position: relative; width: 360px; background: #f1f5f9; border-radius: 14px;
-                box-shadow: 0 8px 24px rgba(15,23,42,0.08), 0 0 0 1px rgba(15,23,42,0.05);
+                position: fixed; top: 16px; right: 16px; z-index: 99999;
+                width: 360px; background: #f1f5f9; border-radius: 14px;
+                box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a; overflow: hidden;
             }
-            #cy-add-friend-shell.cy-minimized { display: none !important; }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
@@ -1273,10 +1265,15 @@
                 line-height: 1; font-size: 18px; flex-shrink: 0;
             }
             #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.28); }
-            #cy-add-friend-panel .cy-body { padding: 14px 14px 16px; }
+            #cy-add-friend-panel .cy-body { padding: 12px 12px 14px; }
+            #cy-add-friend-panel .cy-inner-frame {
+                border: 2px solid #7dd3fc; border-radius: 14px;
+                background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+                padding: 12px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.85);
+            }
             #cy-add-friend-panel .cy-card {
                 background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-                padding: 12px 14px; margin-bottom: 12px;
+                padding: 12px 14px; margin-bottom: 10px;
                 box-shadow: 0 1px 2px rgba(15,23,42,0.04);
             }
             #cy-add-friend-panel .cy-progress-head {
@@ -1348,7 +1345,7 @@
                 box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
             }
             #cy-add-friend-panel .cy-btns-wrap {
-                display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px;
+                display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;
             }
             #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
             #cy-add-friend-panel button.cy-btn {
@@ -1495,13 +1492,12 @@
         elStatus.className = 'cy-status';
         elStatus.textContent = '请先导入号码并填写话术';
 
-        body.append(progressCard, splitRow, btnsWrap, elStatus);
+        const innerFrame = document.createElement('div');
+        innerFrame.className = 'cy-inner-frame';
+        innerFrame.append(progressCard, splitRow, btnsWrap, elStatus);
+        body.append(innerFrame);
         panel.append(head, body);
-
-        elShell = document.createElement('div');
-        elShell.id = 'cy-add-friend-shell';
-        elShell.appendChild(panel);
-        document.body.appendChild(elShell);
+        document.body.appendChild(panel);
 
         elMiniBtn = document.createElement('button');
         elMiniBtn.id = 'cy-mini-btn';
@@ -1536,17 +1532,17 @@
             drag.active = true;
             drag.x = e.clientX;
             drag.y = e.clientY;
-            const rect = elShell.getBoundingClientRect();
+            const rect = panel.getBoundingClientRect();
             drag.left = rect.left;
             drag.top = rect.top;
-            elShell.style.right = 'auto';
-            elShell.style.left = drag.left + 'px';
-            elShell.style.top = drag.top + 'px';
+            panel.style.right = 'auto';
+            panel.style.left = drag.left + 'px';
+            panel.style.top = drag.top + 'px';
         });
         document.addEventListener('mousemove', e => {
             if (!drag.active) return;
-            elShell.style.left = drag.left + (e.clientX - drag.x) + 'px';
-            elShell.style.top = drag.top + (e.clientY - drag.y) + 'px';
+            panel.style.left = drag.left + (e.clientX - drag.x) + 'px';
+            panel.style.top = drag.top + (e.clientY - drag.y) + 'px';
         });
         document.addEventListener('mouseup', () => { drag.active = false; });
 
