@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.0
-// @description  畅言加好友阿陌专用，内置60-90秒频繁等待，强制版本更新
+// @version      9.15.1
+// @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,14 +15,34 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.0';
+    const SCRIPT_VERSION = '9.15.1';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
-    const BUILTIN_DELAY_MIN_SEC = 60;
-    const BUILTIN_DELAY_MAX_SEC = 90;
+
+    /** 频繁限制等待不动；其余适当缩短，兼顾稳定与速度 */
+    const PACE = {
+        rateLimitMinSec: 60,
+        rateLimitMaxSec: 90,
+        afterSuccessMs: 800,
+        afterNotFoundMs: 800,
+        afterSkipMs: 650,
+        afterDeferMs: 500,
+        afterRetryMs: 1000,
+        searchWaitMs: 380,
+        actionWaitMs: 380,
+        confirmWaitMs: 320,
+        panelCloseMs: 300,
+        panelCloseRetryMs: 260,
+        remarkCheckMs: 150,
+        confirmClickMs: 280,
+        typingMs: 80,
+        typingAfterMs: 100,
+        pollFastMs: 150,
+        pollNormalMs: 180,
+    };
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
     const PROGRESS_STORAGE_KEY = 'changyan_add_friend_progress';
@@ -340,12 +360,14 @@
 
     async function waitRateLimitCooldown(phone) {
         await dismissOverlaySafely();
-        const totalMs = randomDelaySeconds(BUILTIN_DELAY_MIN_SEC, BUILTIN_DELAY_MAX_SEC);
+        const totalMs = randomDelaySeconds(PACE.rateLimitMinSec, PACE.rateLimitMaxSec);
         const endAt = Date.now() + totalMs;
         while (Date.now() < endAt) {
             if (stopRequested) return;
             const leftSec = Math.ceil((endAt - Date.now()) / 1000);
-            setStatus(`频繁限制 · 随机等待 ${leftSec} 秒后继续（内置 ${BUILTIN_DELAY_MIN_SEC}-${BUILTIN_DELAY_MAX_SEC} 秒） · ${phone}`);
+            setStatus(
+                `频繁限制 · 随机等待 ${leftSec} 秒后继续（内置 ${PACE.rateLimitMinSec}-${PACE.rateLimitMaxSec} 秒） · ${phone}`
+            );
             await delay(1000);
         }
     }
@@ -507,16 +529,16 @@
         nativeSetter.call(input, '');
         nativeSetter.call(input, value);
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        await delay(120);
+        await delay(PACE.typingMs);
         ['keydown', 'keypress', 'keyup'].forEach(type => {
             input.dispatchEvent(new KeyboardEvent(type, {
                 key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
             }));
         });
-        await delay(150);
+        await delay(PACE.typingAfterMs);
     }
 
-    function waitForSelector(selector, retry = 40, interval = 200) {
+    function waitForSelector(selector, retry = 40, interval = PACE.pollFastMs) {
         return new Promise(resolve => {
             let count = 0;
             const timer = setInterval(() => {
@@ -532,7 +554,7 @@
         });
     }
 
-    function waitForButton(keyword, role = 'button', retry = 60, interval = 250, root = document) {
+    function waitForButton(keyword, role = 'button', retry = 60, interval = PACE.pollNormalMs, root = document) {
         return new Promise(resolve => {
             let count = 0;
             const timer = setInterval(() => {
@@ -589,7 +611,7 @@
         );
         if (scopedClose) {
             scopedClose.click();
-            await delay(450);
+            await delay(PACE.panelCloseMs);
             return !findExistingFriendPanel();
         }
 
@@ -614,14 +636,14 @@
                 return (ra.top + ra.left) - (rb.top + rb.left);
             });
             (candidates[0].closest('button') || candidates[0]).click();
-            await delay(450);
+            await delay(PACE.panelCloseMs);
             return !findExistingFriendPanel();
         }
 
         return false;
     }
 
-    async function waitForExistingFriendPanel(retry = 24, interval = 250) {
+    async function waitForExistingFriendPanel(retry = 24, interval = PACE.pollNormalMs) {
         return new Promise(resolve => {
             let count = 0;
             const timer = setInterval(() => {
@@ -646,14 +668,14 @@
     /** 已是好友：发送消息+设置备注等面板 → 点 X 关闭 → 跳过当前号 */
     async function handleAlreadyFriend(phone, waitPanel) {
         let panel = findExistingFriendPanel();
-        if (!panel && waitPanel) panel = await waitForExistingFriendPanel(12, 200);
+        if (!panel && waitPanel) panel = await waitForExistingFriendPanel(12, PACE.pollFastMs);
         if (!panel) return null;
 
         await closeExistingFriendPanel(panel);
-        await delay(400);
+        await delay(PACE.panelCloseRetryMs);
         if (findExistingFriendPanel()) {
             await closeExistingFriendPanel();
-            await delay(400);
+            await delay(PACE.panelCloseRetryMs);
         }
         if (findExistingFriendPanel()) {
             const back = document.querySelector(
@@ -661,7 +683,7 @@
             );
             if (back && !isOurUI(back)) {
                 back.click();
-                await delay(450);
+                await delay(PACE.panelCloseMs);
             }
         }
         setStatus('已是好友，已跳过: ' + phone);
@@ -696,7 +718,7 @@
     }
 
     async function checkRemarkFilled(input, expected) {
-        await delay(200);
+        await delay(PACE.remarkCheckMs);
         if (input.tagName.toLowerCase() === 'div') return input.textContent.trim() === expected;
         return input.value.trim() === expected;
     }
@@ -706,22 +728,22 @@
             const modal = document.querySelector('.semi-modal-content, .modal-content, .popup-content');
             const root = modal || document.body;
 
-            const completeBtn = await waitForButton('完成', 'button', 20, 250, root);
+            const completeBtn = await waitForButton('完成', 'button', 20, PACE.pollNormalMs, root);
             if (completeBtn && !completeBtn.disabled) {
                 completeBtn.click();
-                await delay(400);
+                await delay(PACE.confirmClickMs);
                 return true;
             }
-            const okBtn = await waitForButton('确定', 'button', 20, 250, root);
+            const okBtn = await waitForButton('确定', 'button', 20, PACE.pollNormalMs, root);
             if (okBtn && !okBtn.disabled) {
                 okBtn.click();
-                await delay(400);
+                await delay(PACE.confirmClickMs);
                 return true;
             }
-            const confirmBtn = await waitForButton('确认', 'button', 20, 250, root);
+            const confirmBtn = await waitForButton('确认', 'button', 20, PACE.pollNormalMs, root);
             if (confirmBtn && !confirmBtn.disabled) {
                 confirmBtn.click();
-                await delay(400);
+                await delay(PACE.confirmClickMs);
                 return true;
             }
             return false;
@@ -746,12 +768,12 @@
         if (!input) return 'retry';
 
         await simulateTyping(input, phone);
-        await delay(600);
+        await delay(PACE.searchWaitMs);
 
         let outcome = await checkAfterAction(phone, true);
         if (outcome) return outcome;
 
-        const addBtn = await waitForButton('添加好友', 'button', 40, 250);
+        const addBtn = await waitForButton('添加好友', 'button', 40, PACE.pollNormalMs);
         if (!addBtn) {
             outcome = await checkAfterAction(phone, true);
             if (outcome) return outcome;
@@ -759,7 +781,7 @@
         }
 
         addBtn.click();
-        await delay(600);
+        await delay(PACE.actionWaitMs);
 
         outcome = await checkAfterAction(phone, false);
         if (outcome) return outcome;
@@ -787,7 +809,7 @@
         if (!ok) return 'retry';
 
         await clickConfirmComplete();
-        await delay(500);
+        await delay(PACE.confirmWaitMs);
 
         outcome = checkRateLimitOrNotFound();
         if (outcome) return outcome;
@@ -860,7 +882,7 @@
                 updateStats();
                 saveProgress();
                 setStatus(`${statsLine()} | 已完成: ${phone}`);
-                await delay(1200);
+                await delay(PACE.afterSuccessMs);
             } else if (result === 'not_found') {
                 markPhoneCompleted(phone);
                 failCount++;
@@ -870,7 +892,7 @@
                 saveProgress();
                 setStatus(`用户不存在，跳过: ${phone} | ${statsLine()}`);
                 await dismissOverlaySafely();
-                await delay(1200);
+                await delay(PACE.afterNotFoundMs);
             } else if (result === 'already_friend') {
                 markPhoneCompleted(phone);
                 skipCount++;
@@ -879,7 +901,7 @@
                 updateStats();
                 saveProgress();
                 setStatus(`已是好友，跳过: ${phone} | ${statsLine()}`);
-                await delay(1000);
+                await delay(PACE.afterSkipMs);
             } else if (result === 'rate_limit') {
                 if (phoneList.length <= 1) {
                     await waitRateLimitCooldown(phone);
@@ -899,7 +921,7 @@
                             setStatus(`频繁: ${deferred} 已在移后列表，再次移到最后 → ${nextPhone}`);
                         }
                         updateStats();
-                        await delay(800);
+                        await delay(PACE.afterDeferMs);
                     }
                 }
                 await dismissOverlaySafely();
@@ -907,7 +929,7 @@
             } else {
                 setStatus(`未完成添加，重试当前号: ${phone}`);
                 await dismissOverlaySafely();
-                await delay(1500);
+                await delay(PACE.afterRetryMs);
             }
 
             if (stopRequested) {
