@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.2
+// @version      9.15.3
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,22 +15,22 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.2';
+    const SCRIPT_VERSION = '9.15.3';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
 
-    /** 频繁限制与 UI 操作等待保持原速；仅缩短号与号之间的间隔 */
+    /** 频繁限制与 UI 操作等待保持原速；号与号间隔 + 轮询逻辑可继续压缩 */
     const PACE = {
         rateLimitMinSec: 60,
         rateLimitMaxSec: 90,
-        afterSuccessMs: 800,
-        afterNotFoundMs: 800,
-        afterSkipMs: 650,
-        afterDeferMs: 500,
-        afterRetryMs: 1000,
+        afterSuccessMs: 500,
+        afterNotFoundMs: 450,
+        afterSkipMs: 400,
+        afterDeferMs: 350,
+        afterRetryMs: 750,
         searchWaitMs: 380,
         actionWaitMs: 600,
         confirmWaitMs: 500,
@@ -538,6 +538,42 @@
         await delay(PACE.typingAfterMs);
     }
 
+    /** 验证消息等无需回车的输入框：直填，省 typing 等待 */
+    function setInputValue(input, value) {
+        input.focus();
+        if (input.tagName.toLowerCase() === 'div') {
+            document.execCommand('selectAll');
+            document.execCommand('delete');
+            input.textContent = value;
+            input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+            return;
+        }
+        const nativeSetter = Object.getOwnPropertyDescriptor(input.__proto__, 'value').set;
+        nativeSetter.call(input, '');
+        nativeSetter.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    function findAddFriendButton(root = document) {
+        return Array.from(root.querySelectorAll('button, div[role="button"]'))
+            .find(el => !isOurUI(el) && (el.innerText || '').includes('添加好友')) || null;
+    }
+
+    /** 回车后轮询到结果即继续，最长仍不超过 searchWaitMs */
+    async function waitSearchOutcome(phone, waitFriendPanel) {
+        const endAt = Date.now() + PACE.searchWaitMs;
+        while (Date.now() < endAt) {
+            const blocked = checkRateLimitOrNotFound();
+            if (blocked) return blocked;
+            if (findExistingFriendPanel()) {
+                return await handleAlreadyFriend(phone, false);
+            }
+            if (findAddFriendButton()) return null;
+            await delay(PACE.pollFastMs);
+        }
+        return await checkAfterAction(phone, waitFriendPanel);
+    }
+
     function waitForSelector(selector, retry = 40, interval = PACE.pollFastMs) {
         return new Promise(resolve => {
             let count = 0;
@@ -727,24 +763,19 @@
         try {
             const modal = document.querySelector('.semi-modal-content, .modal-content, .popup-content');
             const root = modal || document.body;
-
-            const completeBtn = await waitForButton('完成', 'button', 20, PACE.pollNormalMs, root);
-            if (completeBtn && !completeBtn.disabled) {
-                completeBtn.click();
-                await delay(PACE.confirmClickMs);
-                return true;
-            }
-            const okBtn = await waitForButton('确定', 'button', 20, PACE.pollNormalMs, root);
-            if (okBtn && !okBtn.disabled) {
-                okBtn.click();
-                await delay(PACE.confirmClickMs);
-                return true;
-            }
-            const confirmBtn = await waitForButton('确认', 'button', 20, PACE.pollNormalMs, root);
-            if (confirmBtn && !confirmBtn.disabled) {
-                confirmBtn.click();
-                await delay(PACE.confirmClickMs);
-                return true;
+            const keywords = ['完成', '确定', '确认'];
+            const endAt = Date.now() + 20 * PACE.pollNormalMs;
+            while (Date.now() < endAt) {
+                for (const kw of keywords) {
+                    const btn = Array.from(root.querySelectorAll('button, div[role="button"]'))
+                        .find(el => !isOurUI(el) && (el.innerText || '').includes(kw) && !el.disabled);
+                    if (btn) {
+                        btn.click();
+                        await delay(PACE.confirmClickMs);
+                        return true;
+                    }
+                }
+                await delay(PACE.pollNormalMs);
             }
             return false;
         } catch (e) {
@@ -768,12 +799,11 @@
         if (!input) return 'retry';
 
         await simulateTyping(input, phone);
-        await delay(PACE.searchWaitMs);
 
-        let outcome = await checkAfterAction(phone, true);
+        let outcome = await waitSearchOutcome(phone, true);
         if (outcome) return outcome;
 
-        const addBtn = await waitForButton('添加好友', 'button', 40, PACE.pollNormalMs);
+        const addBtn = findAddFriendButton() || await waitForButton('添加好友', 'button', 40, PACE.pollNormalMs);
         if (!addBtn) {
             outcome = await checkAfterAction(phone, true);
             if (outcome) return outcome;
@@ -795,15 +825,7 @@
         if (talkList.length === 0) return 'retry';
 
         const msg = talkList[talkIndex++ % talkList.length];
-        if (remarkInput.tagName.toLowerCase() === 'div') {
-            remarkInput.focus();
-            document.execCommand('selectAll');
-            document.execCommand('delete');
-            remarkInput.textContent = msg;
-            remarkInput.dispatchEvent(new InputEvent('input', { bubbles: true }));
-        } else {
-            await simulateTyping(remarkInput, msg);
-        }
+        setInputValue(remarkInput, msg);
 
         const ok = await checkRemarkFilled(remarkInput, msg);
         if (!ok) return 'retry';
@@ -891,7 +913,6 @@
                 updateStats();
                 saveProgress();
                 setStatus(`用户不存在，跳过: ${phone} | ${statsLine()}`);
-                await dismissOverlaySafely();
                 await delay(PACE.afterNotFoundMs);
             } else if (result === 'already_friend') {
                 markPhoneCompleted(phone);
