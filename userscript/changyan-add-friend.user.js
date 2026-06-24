@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.5
+// @version      9.15.6
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.5';
+    const SCRIPT_VERSION = '9.15.6';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
@@ -475,7 +475,7 @@
     function saveProgress() {
         try {
             if (!phoneList.length) return;
-            localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify({
+            sessionStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify({
                 phoneList,
                 phoneIndex,
                 successCount,
@@ -491,7 +491,14 @@
 
     function loadProgress() {
         try {
-            const raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
+            let raw = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
+            if (!raw) {
+                raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
+                if (raw) {
+                    sessionStorage.setItem(PROGRESS_STORAGE_KEY, raw);
+                    localStorage.removeItem(PROGRESS_STORAGE_KEY);
+                }
+            }
             if (!raw) return false;
             const data = JSON.parse(raw);
             if (!data || !Array.isArray(data.phoneList) || !data.phoneList.length) return false;
@@ -517,6 +524,7 @@
 
     function clearProgress() {
         try {
+            sessionStorage.removeItem(PROGRESS_STORAGE_KEY);
             localStorage.removeItem(PROGRESS_STORAGE_KEY);
         } catch (e) {}
         updateStartButtonLabel();
