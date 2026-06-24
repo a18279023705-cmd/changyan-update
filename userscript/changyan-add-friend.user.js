@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.3
+// @version      9.15.4
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.3';
+    const SCRIPT_VERSION = '9.15.4';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
@@ -67,6 +67,8 @@
     let deferredPhoneLog = [];
     let deferredPhoneKeys = new Set();
     let keepAliveTimer = null;
+    let cachedSearchInput = null;
+    let visibleTextCache = { text: '', at: 0 };
 
     let panel = null;
     let elMiniBtn = null;
@@ -243,7 +245,11 @@
     }
 
     function getVisibleText() {
-        return (document.body && document.body.innerText) || '';
+        const now = Date.now();
+        if (now - visibleTextCache.at < 100) return visibleTextCache.text;
+        const text = (document.body && document.body.innerText) || '';
+        visibleTextCache = { text, at: now };
+        return text;
     }
 
     function parseVersionParts(version) {
@@ -350,12 +356,7 @@
     }
 
     function detectUserNotFound() {
-        const text = getVisibleText();
-        const hints = [
-            '用户不存在', '该用户不存在', '未找到该用户', '找不到用户',
-            '用户未找到', '无此用户', '未搜索到', '搜索无结果', '不存在该用户'
-        ];
-        return hints.some(h => text.includes(h));
+        return getVisibleText().includes('用户不存在');
     }
 
     async function waitRateLimitCooldown(phone) {
@@ -523,13 +524,33 @@
         elBtnStart.textContent = hasResume ? '继续' : '开始';
     }
 
-    async function simulateTyping(input, value) {
-        input.focus();
-        const nativeSetter = Object.getOwnPropertyDescriptor(input.__proto__, 'value').set;
-        nativeSetter.call(input, '');
-        nativeSetter.call(input, value);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        await delay(PACE.typingMs);
+    async function pollUntil(testFn, maxMs, interval = PACE.pollFastMs) {
+        const endAt = Date.now() + maxMs;
+        while (Date.now() < endAt) {
+            const result = testFn();
+            if (result) return result;
+            await delay(interval);
+        }
+        return testFn();
+    }
+
+    const SEARCH_INPUT_SEL =
+        'input.semi-input, input[type="text"], input[placeholder*="手机号"], input[placeholder*="畅言"]';
+
+    function findSearchInput() {
+        if (cachedSearchInput && document.contains(cachedSearchInput)) return cachedSearchInput;
+        cachedSearchInput = document.querySelector(SEARCH_INPUT_SEL);
+        return cachedSearchInput;
+    }
+
+    function clearSearchInput(input) {
+        const el = input || findSearchInput();
+        if (!el) return;
+        setInputValue(el, '');
+    }
+
+    async function setInputValueAndEnter(input, value) {
+        setInputValue(input, value);
         ['keydown', 'keypress', 'keyup'].forEach(type => {
             input.dispatchEvent(new KeyboardEvent(type, {
                 key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
@@ -571,7 +592,7 @@
             if (findAddFriendButton()) return null;
             await delay(PACE.pollFastMs);
         }
-        return await checkAfterAction(phone, waitFriendPanel);
+        return await checkAfterAction(phone, waitFriendPanel && !findAddFriendButton());
     }
 
     function waitForSelector(selector, retry = 40, interval = PACE.pollFastMs) {
@@ -635,9 +656,14 @@
         return null;
     }
 
+    async function waitPanelClosed(maxMs = PACE.panelCloseMs) {
+        await pollUntil(() => !findExistingFriendPanel(), maxMs);
+        return !findExistingFriendPanel();
+    }
+
     async function closeExistingFriendPanel(panel) {
         panel = panel || findExistingFriendPanel();
-        if (!panel) return false;
+        if (!panel) return true;
 
         const root = panel.closest('.semi-modal, .modal, [class*="modal"]') || panel;
         const box = root.getBoundingClientRect();
@@ -647,8 +673,7 @@
         );
         if (scopedClose) {
             scopedClose.click();
-            await delay(PACE.panelCloseMs);
-            return !findExistingFriendPanel();
+            return waitPanelClosed();
         }
 
         const candidates = Array.from(root.querySelectorAll('button, span, div, i, svg')).filter(el => {
@@ -672,27 +697,10 @@
                 return (ra.top + ra.left) - (rb.top + rb.left);
             });
             (candidates[0].closest('button') || candidates[0]).click();
-            await delay(PACE.panelCloseMs);
-            return !findExistingFriendPanel();
+            return waitPanelClosed();
         }
 
         return false;
-    }
-
-    async function waitForExistingFriendPanel(retry = 24, interval = PACE.pollNormalMs) {
-        return new Promise(resolve => {
-            let count = 0;
-            const timer = setInterval(() => {
-                const p = findExistingFriendPanel();
-                if (p) {
-                    clearInterval(timer);
-                    resolve(p);
-                } else if (++count >= retry) {
-                    clearInterval(timer);
-                    resolve(null);
-                }
-            }, interval);
-        });
     }
 
     async function dismissOverlaySafely() {
@@ -703,15 +711,15 @@
 
     /** 已是好友：发送消息+设置备注等面板 → 点 X 关闭 → 跳过当前号 */
     async function handleAlreadyFriend(phone, waitPanel) {
-        let panel = findExistingFriendPanel();
-        if (!panel && waitPanel) panel = await waitForExistingFriendPanel(12, PACE.pollFastMs);
-        if (!panel) return null;
+        let friendPanel = findExistingFriendPanel();
+        if (!friendPanel && waitPanel) {
+            friendPanel = await pollUntil(() => findExistingFriendPanel(), 12 * PACE.pollFastMs);
+        }
+        if (!friendPanel) return null;
 
-        await closeExistingFriendPanel(panel);
-        await delay(PACE.panelCloseRetryMs);
+        await closeExistingFriendPanel(friendPanel);
         if (findExistingFriendPanel()) {
             await closeExistingFriendPanel();
-            await delay(PACE.panelCloseRetryMs);
         }
         if (findExistingFriendPanel()) {
             const back = document.querySelector(
@@ -719,7 +727,7 @@
             );
             if (back && !isOurUI(back)) {
                 back.click();
-                await delay(PACE.panelCloseMs);
+                await waitPanelClosed();
             }
         }
         setStatus('已是好友，已跳过: ' + phone);
@@ -739,7 +747,7 @@
         return await handleAlreadyFriend(phone, waitFriendPanel);
     }
 
-    async function findRemarkInput() {
+    function findRemarkInputSync() {
         const container = document.querySelector('.semi-modal-content, .modal-content, .popup-content') || document.body;
         const textarea = container.querySelector('textarea.semi-textarea, textarea');
         if (textarea) return textarea;
@@ -753,10 +761,52 @@
         return container.querySelector('div[contenteditable="true"]') || null;
     }
 
+    async function findRemarkInput() {
+        return findRemarkInputSync();
+    }
+
+    function isAddFriendModalOpen() {
+        const modal = document.querySelector('.semi-modal-content, .modal-content, .popup-content');
+        if (!modal) return false;
+        return Array.from(modal.querySelectorAll('button, div[role="button"]'))
+            .some(el => !isOurUI(el) && ['完成', '确定', '确认'].some(k => (el.innerText || '').includes(k)));
+    }
+
+    async function waitForRemarkInput(phone) {
+        const endAt = Date.now() + PACE.actionWaitMs;
+        while (Date.now() < endAt) {
+            const blocked = checkRateLimitOrNotFound();
+            if (blocked) return blocked;
+            if (findExistingFriendPanel()) {
+                return await handleAlreadyFriend(phone, false);
+            }
+            const input = findRemarkInputSync();
+            if (input) return input;
+            await delay(PACE.pollFastMs);
+        }
+        return null;
+    }
+
+    async function waitConfirmSettled() {
+        await pollUntil(
+            () => !isAddFriendModalOpen() || detectRateLimit() || detectUserNotFound(),
+            PACE.confirmWaitMs
+        );
+    }
+
     async function checkRemarkFilled(input, expected) {
-        await delay(PACE.remarkCheckMs);
-        if (input.tagName.toLowerCase() === 'div') return input.textContent.trim() === expected;
-        return input.value.trim() === expected;
+        const endAt = Date.now() + PACE.remarkCheckMs;
+        while (Date.now() < endAt) {
+            const val = input.tagName.toLowerCase() === 'div'
+                ? input.textContent.trim()
+                : input.value.trim();
+            if (val === expected) return true;
+            await delay(50);
+        }
+        const val = input.tagName.toLowerCase() === 'div'
+            ? input.textContent.trim()
+            : input.value.trim();
+        return val === expected;
     }
 
     async function clickConfirmComplete() {
@@ -793,12 +843,11 @@
     async function addFriendAttempt(phone) {
         if (detectRateLimit()) return 'rate_limit';
 
-        const input = await waitForSelector(
-            'input.semi-input, input[type="text"], input[placeholder*="手机号"], input[placeholder*="畅言"]'
-        );
+        const input = findSearchInput() || await waitForSelector(SEARCH_INPUT_SEL);
         if (!input) return 'retry';
+        cachedSearchInput = input;
 
-        await simulateTyping(input, phone);
+        await setInputValueAndEnter(input, phone);
 
         let outcome = await waitSearchOutcome(phone, true);
         if (outcome) return outcome;
@@ -811,13 +860,10 @@
         }
 
         addBtn.click();
-        await delay(PACE.actionWaitMs);
 
-        outcome = await checkAfterAction(phone, false);
-        if (outcome) return outcome;
-
-        const remarkInput = await findRemarkInput();
-        if (!remarkInput) {
+        const remarkResult = await waitForRemarkInput(phone);
+        if (typeof remarkResult === 'string') return remarkResult;
+        if (!remarkResult) {
             outcome = await checkAfterAction(phone, true);
             if (outcome) return outcome;
             return 'retry';
@@ -825,17 +871,18 @@
         if (talkList.length === 0) return 'retry';
 
         const msg = talkList[talkIndex++ % talkList.length];
-        setInputValue(remarkInput, msg);
+        setInputValue(remarkResult, msg);
 
-        const ok = await checkRemarkFilled(remarkInput, msg);
+        const ok = await checkRemarkFilled(remarkResult, msg);
         if (!ok) return 'retry';
 
         await clickConfirmComplete();
-        await delay(PACE.confirmWaitMs);
+        await waitConfirmSettled();
 
         outcome = checkRateLimitOrNotFound();
         if (outcome) return outcome;
 
+        clearSearchInput(input);
         setStatus('添加成功: ' + phone);
         return 'success';
     }
