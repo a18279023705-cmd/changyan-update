@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.1
+// @version      9.15.2
 // @description  畅言加好友阿陌专用，内置60-90秒频繁等待，适当提速，强制版本更新
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,14 +15,14 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.1';
+    const SCRIPT_VERSION = '9.15.2';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
 
-    /** 频繁限制等待不动；其余适当缩短，兼顾稳定与速度 */
+    /** 频繁限制与 UI 操作等待保持原速；仅缩短号与号之间的间隔 */
     const PACE = {
         rateLimitMinSec: 60,
         rateLimitMaxSec: 90,
@@ -32,16 +32,16 @@
         afterDeferMs: 500,
         afterRetryMs: 1000,
         searchWaitMs: 380,
-        actionWaitMs: 380,
-        confirmWaitMs: 320,
-        panelCloseMs: 300,
-        panelCloseRetryMs: 260,
-        remarkCheckMs: 150,
-        confirmClickMs: 280,
+        actionWaitMs: 600,
+        confirmWaitMs: 500,
+        panelCloseMs: 450,
+        panelCloseRetryMs: 400,
+        remarkCheckMs: 200,
+        confirmClickMs: 400,
         typingMs: 80,
         typingAfterMs: 100,
-        pollFastMs: 150,
-        pollNormalMs: 180,
+        pollFastMs: 200,
+        pollNormalMs: 250,
     };
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
