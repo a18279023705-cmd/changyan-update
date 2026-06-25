@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.10
+// @version      9.15.11
 // @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.10';
+    const SCRIPT_VERSION = '9.15.11';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const RELEASE_BASE =
@@ -56,6 +56,7 @@
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
     const PROGRESS_STORAGE_KEY = 'changyan_add_friend_progress';
+    const PHONE_LIST_STORAGE_KEY = 'changyan_add_friend_phones';
     const TAB_ID_KEY = 'changyan_add_friend_tab_id';
     const XLSX_CDN_LIST = [
         'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -83,6 +84,7 @@
     let keepAliveActive = false;
     let cachedSearchInput = null;
     let visibleTextCache = { text: '', at: 0 };
+    let progressBackupTimer = null;
 
     let panel = null;
     let elMiniBtn = null;
@@ -515,26 +517,23 @@
         return `${PROGRESS_STORAGE_KEY}_backup_${getTabId()}`;
     }
 
-    function progressPayload() {
+    function progressStatePayload() {
         return {
-            phoneList,
+            v: 2,
             phoneIndex,
             successCount,
             failCount,
             skipCount,
-            deferCount,
             deferredPhoneLog,
             talkIndex,
             stableSuccessTarget,
             successSinceCooldown,
             frequentHitCount,
             rateLimitRoundCount,
-            fingerprint: listFingerprint(phoneList),
         };
     }
 
-    function applyProgressData(data) {
-        phoneList = data.phoneList;
+    function applyProgressState(data) {
         phoneIndex = Math.min(Math.max(0, data.phoneIndex || 0), phoneList.length);
         successCount = data.successCount || 0;
         failCount = data.failCount || 0;
@@ -553,31 +552,96 @@
         updateStartButtonLabel();
     }
 
-    function saveProgress() {
+    function applyProgressData(data) {
+        phoneList = data.phoneList;
+        applyProgressState(data);
+    }
+
+    /** 号码列表单独存，避免每加一个好友就序列化整表 */
+    function savePhoneList(flushBackup = false) {
+        if (!phoneList.length) return;
         try {
-            if (!phoneList.length) return;
-            const payload = JSON.stringify(progressPayload());
-            sessionStorage.setItem(PROGRESS_STORAGE_KEY, payload);
-            localStorage.setItem(progressBackupKey(), payload);
+            const payload = JSON.stringify(phoneList);
+            sessionStorage.setItem(PHONE_LIST_STORAGE_KEY, payload);
+            if (flushBackup) {
+                localStorage.setItem(`${progressBackupKey()}_phones`, payload);
+            }
+        } catch (e) {}
+    }
+
+    function scheduleProgressBackup() {
+        if (progressBackupTimer) return;
+        progressBackupTimer = setTimeout(() => {
+            progressBackupTimer = null;
+            try {
+                const state = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
+                const phones = sessionStorage.getItem(PHONE_LIST_STORAGE_KEY);
+                if (state) localStorage.setItem(`${progressBackupKey()}_state`, state);
+                if (phones) localStorage.setItem(`${progressBackupKey()}_phones`, phones);
+            } catch (e) {}
+        }, 400);
+    }
+
+    /** flushBackup=true：暂停/离开页面，立刻双写；否则只写 session（毫秒级） */
+    function saveProgress(flushBackup = false) {
+        if (!phoneList.length) return;
+        try {
+            const state = JSON.stringify(progressStatePayload());
+            sessionStorage.setItem(PROGRESS_STORAGE_KEY, state);
+            if (flushBackup) {
+                if (progressBackupTimer) {
+                    clearTimeout(progressBackupTimer);
+                    progressBackupTimer = null;
+                }
+                localStorage.setItem(`${progressBackupKey()}_state`, state);
+                savePhoneList(true);
+            } else {
+                scheduleProgressBackup();
+            }
         } catch (e) {}
     }
 
     function loadProgress() {
         try {
-            let raw = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
-            if (!raw) raw = localStorage.getItem(progressBackupKey());
-            if (!raw) {
-                raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
+            let stateRaw = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
+            let phonesRaw = sessionStorage.getItem(PHONE_LIST_STORAGE_KEY);
+
+            if (!phonesRaw) phonesRaw = localStorage.getItem(`${progressBackupKey()}_phones`);
+            if (!stateRaw) stateRaw = localStorage.getItem(`${progressBackupKey()}_state`);
+
+            if (!phonesRaw && stateRaw) {
+                const legacy = JSON.parse(stateRaw);
+                if (legacy && Array.isArray(legacy.phoneList) && legacy.phoneList.length) {
+                    applyProgressData(legacy);
+                    savePhoneList(true);
+                    saveProgress(true);
+                    return true;
+                }
+            }
+
+            if (!stateRaw || !phonesRaw) {
+                const raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
                 if (raw) {
                     sessionStorage.setItem(PROGRESS_STORAGE_KEY, raw);
                     localStorage.removeItem(PROGRESS_STORAGE_KEY);
+                    return loadProgress();
                 }
+                return false;
             }
-            if (!raw) return false;
-            const data = JSON.parse(raw);
-            if (!data || !Array.isArray(data.phoneList) || !data.phoneList.length) return false;
-            if (data.fingerprint !== listFingerprint(data.phoneList)) return false;
-            applyProgressData(data);
+
+            const data = JSON.parse(stateRaw);
+            phoneList = JSON.parse(phonesRaw);
+            if (!phoneList.length) return false;
+
+            if (data.v === 2) {
+                applyProgressState(data);
+            } else if (data.fingerprint === listFingerprint(phoneList)) {
+                applyProgressData(data);
+            } else {
+                return false;
+            }
+
+            sessionStorage.setItem(PHONE_LIST_STORAGE_KEY, phonesRaw);
             return true;
         } catch (e) {
             return false;
@@ -586,8 +650,14 @@
 
     function clearProgress() {
         try {
+            if (progressBackupTimer) {
+                clearTimeout(progressBackupTimer);
+                progressBackupTimer = null;
+            }
             sessionStorage.removeItem(PROGRESS_STORAGE_KEY);
-            localStorage.removeItem(progressBackupKey());
+            sessionStorage.removeItem(PHONE_LIST_STORAGE_KEY);
+            localStorage.removeItem(`${progressBackupKey()}_state`);
+            localStorage.removeItem(`${progressBackupKey()}_phones`);
             localStorage.removeItem(PROGRESS_STORAGE_KEY);
         } catch (e) {}
         updateStartButtonLabel();
@@ -598,7 +668,7 @@
         window.__cyProgressGuard = true;
         const flush = () => {
             if (phoneList.length && (running || completedCount() > 0 || phoneIndex > 0)) {
-                saveProgress();
+                saveProgress(true);
             }
         };
         window.addEventListener('pagehide', flush);
@@ -1048,7 +1118,7 @@
 
         while (phoneIndex < phoneList.length) {
             if (stopRequested) {
-                saveProgress();
+                saveProgress(true);
                 setStatus(`已暂停 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'} | ${statsLine()}`);
                 break;
             }
@@ -1056,6 +1126,7 @@
             const phone = phoneList[phoneIndex];
             updateStats();
             setStatus(`处理: ${phone}`);
+            let listReordered = false;
 
             const attemptResult = await Promise.race([
                 addFriendAttempt(phone).then(result => ({ type: 'done', result })),
@@ -1064,7 +1135,7 @@
 
             if (attemptResult.type === 'stuck') {
                 await forceRecoverStuck(phone);
-                saveProgress();
+                saveProgress(true);
                 continue;
             }
 
@@ -1078,7 +1149,6 @@
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
                 updateStats();
-                saveProgress();
                 setStatus(`${statsLine()} | 已完成: ${phone}`);
                 await delay(PACE.afterSuccessMs);
             } else if (result === 'not_found') {
@@ -1088,7 +1158,6 @@
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
                 updateStats();
-                saveProgress();
                 setStatus(`用户不存在，跳过: ${phone} | ${statsLine()}`);
                 await delay(PACE.afterNotFoundMs);
             } else if (result === 'already_friend') {
@@ -1098,7 +1167,6 @@
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
                 updateStats();
-                saveProgress();
                 setStatus(`已是好友，跳过: ${phone} | ${statsLine()}`);
                 await delay(PACE.afterSkipMs);
             } else if (result === 'rate_limit') {
@@ -1114,6 +1182,7 @@
                     }
                 } else {
                     const { phone: deferred, isNewDefer } = deferCurrentPhoneToEnd();
+                    listReordered = true;
                     rateLimitRoundCount++;
 
                     if (shouldTriggerCooldown()) {
@@ -1130,15 +1199,17 @@
                         await delay(PACE.afterDeferMs);
                     }
                 }
-                saveProgress();
             } else {
                 setStatus(`未完成添加，重试当前号: ${phone}`);
                 await dismissOverlaySafely();
                 await delay(PACE.afterRetryMs);
             }
 
+            if (listReordered) savePhoneList();
+            saveProgress(stopRequested);
+
             if (stopRequested) {
-                saveProgress();
+                saveProgress(true);
                 setStatus(`已暂停 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'} | ${statsLine()}`);
                 break;
             }
@@ -1162,7 +1233,7 @@
 
     function stopLoop() {
         stopRequested = true;
-        saveProgress();
+        saveProgress(true);
         setStatus(
             phoneList.length
                 ? `已暂停并保存 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'}`
@@ -1472,7 +1543,8 @@
                 resetFrequentTracking();
                 clearDeferredStats();
                 clearProgress();
-                saveProgress();
+                savePhoneList(true);
+                saveProgress(true);
                 updateStats();
                 updateStartButtonLabel();
                 let msg = '已导入 ' + phones.length + ' 个号码（手机号/畅言号）';
