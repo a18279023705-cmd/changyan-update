@@ -1,26 +1,28 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.9
-// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，卡住强制继续
+// @version      9.15.10
+// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
 // @run-at       document-end
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
-// @updateURL    https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.meta.js
-// @downloadURL  https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js
+// @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
+// @downloadURL  https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.user.js
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.9';
+    const SCRIPT_VERSION = '9.15.10';
+    const RAW_BASE =
+        'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
-    const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
-    const MIN_VERSION_URL = RELEASE_BASE + '/changyan-add-friend.min-version.txt';
-    const DOWNLOAD_URL = RELEASE_BASE + '/changyan-add-friend.user.js';
+    const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
+    const MIN_VERSION_URL = RAW_BASE + '/changyan-add-friend.min-version.txt';
+    const DOWNLOAD_URL = RAW_BASE + '/changyan-add-friend.user.js';
 
     /** 稳定跑够后频繁过多才冷却 ~65 秒；卡住超时强制恢复 */
     const PACE = {
