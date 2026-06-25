@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.8
+// @version      9.15.9
 // @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，卡住强制继续
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.8';
+    const SCRIPT_VERSION = '9.15.9';
     const RELEASE_BASE =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RELEASE_BASE + '/changyan-add-friend.version.txt';
@@ -54,6 +54,7 @@
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
     const PROGRESS_STORAGE_KEY = 'changyan_add_friend_progress';
+    const TAB_ID_KEY = 'changyan_add_friend_tab_id';
     const XLSX_CDN_LIST = [
         'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
         'https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -495,27 +496,74 @@
         return { list: result, removed: list.length - result.length };
     }
 
+    function getTabId() {
+        try {
+            let id = sessionStorage.getItem(TAB_ID_KEY);
+            if (!id) {
+                id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+                sessionStorage.setItem(TAB_ID_KEY, id);
+            }
+            return id;
+        } catch (e) {
+            return 'default';
+        }
+    }
+
+    function progressBackupKey() {
+        return `${PROGRESS_STORAGE_KEY}_backup_${getTabId()}`;
+    }
+
+    function progressPayload() {
+        return {
+            phoneList,
+            phoneIndex,
+            successCount,
+            failCount,
+            skipCount,
+            deferCount,
+            deferredPhoneLog,
+            talkIndex,
+            stableSuccessTarget,
+            successSinceCooldown,
+            frequentHitCount,
+            rateLimitRoundCount,
+            fingerprint: listFingerprint(phoneList),
+        };
+    }
+
+    function applyProgressData(data) {
+        phoneList = data.phoneList;
+        phoneIndex = Math.min(Math.max(0, data.phoneIndex || 0), phoneList.length);
+        successCount = data.successCount || 0;
+        failCount = data.failCount || 0;
+        skipCount = data.skipCount || 0;
+        deferredPhoneLog = normalizeDeferredLog(
+            Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : []
+        );
+        rebuildDeferredStats();
+        talkIndex = data.talkIndex || 0;
+        stableSuccessTarget = data.stableSuccessTarget || 0;
+        successSinceCooldown = data.successSinceCooldown || 0;
+        frequentHitCount = data.frequentHitCount || 0;
+        rateLimitRoundCount = data.rateLimitRoundCount || 0;
+        if (!stableSuccessTarget) rollStableSuccessTarget();
+        updateStats();
+        updateStartButtonLabel();
+    }
+
     function saveProgress() {
         try {
             if (!phoneList.length) return;
-            sessionStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify({
-                phoneList,
-                phoneIndex,
-                successCount,
-                failCount,
-                skipCount,
-                deferCount,
-                deferredPhoneLog,
-                talkIndex,
-                stableSuccessTarget,
-                fingerprint: listFingerprint(phoneList),
-            }));
+            const payload = JSON.stringify(progressPayload());
+            sessionStorage.setItem(PROGRESS_STORAGE_KEY, payload);
+            localStorage.setItem(progressBackupKey(), payload);
         } catch (e) {}
     }
 
     function loadProgress() {
         try {
             let raw = sessionStorage.getItem(PROGRESS_STORAGE_KEY);
+            if (!raw) raw = localStorage.getItem(progressBackupKey());
             if (!raw) {
                 raw = localStorage.getItem(PROGRESS_STORAGE_KEY);
                 if (raw) {
@@ -527,21 +575,7 @@
             const data = JSON.parse(raw);
             if (!data || !Array.isArray(data.phoneList) || !data.phoneList.length) return false;
             if (data.fingerprint !== listFingerprint(data.phoneList)) return false;
-
-            phoneList = data.phoneList;
-            phoneIndex = Math.min(Math.max(0, data.phoneIndex || 0), phoneList.length);
-            successCount = data.successCount || 0;
-            failCount = data.failCount || 0;
-            skipCount = data.skipCount || 0;
-            deferredPhoneLog = normalizeDeferredLog(
-                Array.isArray(data.deferredPhoneLog) ? data.deferredPhoneLog : []
-            );
-            rebuildDeferredStats();
-            talkIndex = data.talkIndex || 0;
-            stableSuccessTarget = data.stableSuccessTarget || 0;
-            if (!stableSuccessTarget) rollStableSuccessTarget();
-            updateStats();
-            updateStartButtonLabel();
+            applyProgressData(data);
             return true;
         } catch (e) {
             return false;
@@ -551,14 +585,32 @@
     function clearProgress() {
         try {
             sessionStorage.removeItem(PROGRESS_STORAGE_KEY);
+            localStorage.removeItem(progressBackupKey());
             localStorage.removeItem(PROGRESS_STORAGE_KEY);
         } catch (e) {}
         updateStartButtonLabel();
     }
 
+    function bindProgressGuard() {
+        if (window.__cyProgressGuard) return;
+        window.__cyProgressGuard = true;
+        const flush = () => {
+            if (phoneList.length && (running || completedCount() > 0 || phoneIndex > 0)) {
+                saveProgress();
+            }
+        };
+        window.addEventListener('pagehide', flush);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') flush();
+        });
+    }
+
     function updateStartButtonLabel() {
         if (!elBtnStart || running) return;
-        const hasResume = phoneList.length > 0 && phoneIndex > 0 && phoneIndex < phoneList.length;
+        const hasResume =
+            phoneList.length > 0 &&
+            phoneIndex < phoneList.length &&
+            (phoneIndex > 0 || completedCount() > 0);
         elBtnStart.textContent = hasResume ? '继续' : '开始';
     }
 
@@ -972,7 +1024,11 @@
 
         running = true;
         stopRequested = false;
-        resetFrequentTracking();
+        if (phoneIndex === 0 && completedCount() === 0) {
+            resetFrequentTracking();
+        } else if (!stableSuccessTarget) {
+            rollStableSuccessTarget();
+        }
         updateStats();
         startKeepAlive();
         elBtnStart.disabled = true;
@@ -1104,7 +1160,12 @@
 
     function stopLoop() {
         stopRequested = true;
-        setStatus('正在暂停并保存进度...');
+        saveProgress();
+        setStatus(
+            phoneList.length
+                ? `已暂停并保存 | 已完成 ${completedCount()}/${phoneList.length} | 下次继续: ${phoneList[phoneIndex] || '—'}`
+                : '已暂停'
+        );
     }
 
     function clearAllData() {
@@ -1723,6 +1784,8 @@
     }
 
     async function boot() {
+        getTabId();
+        bindProgressGuard();
         const ok = await checkForceUpdate();
         if (!ok) return;
         createPanel();
