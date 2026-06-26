@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.19.0
-// @description  畅言加好友阿陌专用，天空蓝界面，修复篡改猴自动更新
+// @version      9.19.1
+// @description  畅言加好友阿陌专用，天空蓝界面，修复篡改猴更新检测
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
 // @run-at       document-end
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
-// @updateURL    https://cdn.jsdelivr.net/gh/a18279023705-cmd/changyan-update@main/userscript/changyan-add-friend.meta.js
+// @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
 // @downloadURL  https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js
 // ==/UserScript==
