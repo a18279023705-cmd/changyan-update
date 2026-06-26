@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.19.1
-// @description  畅言加好友阿陌专用，天空蓝界面，修复篡改猴更新检测
+// @version      9.20.0
+// @description  畅言加好友阿陌专用，天空蓝界面，频繁限制60-100秒随机
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.19.1';
+    const SCRIPT_VERSION = '9.20.0';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -30,11 +30,11 @@
         stableSuccessMin: 8,
         stableSuccessMax: 18,
         frequentHitThreshold: 2,
-        cooldownCenterSec: 75,
-        cooldownJitterSec: 15,
-        rateLimitMinSec: 50,
-        rateLimitMaxSec: 72,
-        rateLimitStreakExtraSec: 18,
+        cooldownCenterSec: 80,
+        cooldownJitterSec: 20,
+        rateLimitMinSec: 60,
+        rateLimitMaxSec: 100,
+        rateLimitStreakExtraSec: 0,
         rateLimitClearMaxSec: 120,
         stuckForceMs: 18000,
         afterSuccessMs: 900,
@@ -124,6 +124,8 @@
     let elStatus = null;
     let countdownActive = false;
     let countdownLeftSec = 0;
+    let countdownTotalSec = 0;
+    const COUNTDOWN_RING_LEN = 238.76;
     let elProgress = null;
     let elProgressBar = null;
     let elStats = null;
@@ -246,10 +248,10 @@
         lastStatsKey = key;
         if (elStats) {
             elStats.innerHTML = `
-                <span class="cy-chip cy-chip-ok"><span class="cy-chip-num">${successCount}</span><span class="cy-chip-label">成功</span></span>
-                <span class="cy-chip cy-chip-fail"><span class="cy-chip-num">${failCount}</span><span class="cy-chip-label">失败</span></span>
-                <span class="cy-chip cy-chip-skip"><span class="cy-chip-num">${skipCount}</span><span class="cy-chip-label">跳过</span></span>
-                <span class="cy-chip cy-chip-defer"><span class="cy-chip-num">${deferCount}</span><span class="cy-chip-label">移后</span></span>
+                <span class="cy-chip cy-chip-ok"><span class="cy-chip-icon">✓</span><span class="cy-chip-num">${successCount}</span><span class="cy-chip-label">成功</span></span>
+                <span class="cy-chip cy-chip-fail"><span class="cy-chip-icon">✕</span><span class="cy-chip-num">${failCount}</span><span class="cy-chip-label">失败</span></span>
+                <span class="cy-chip cy-chip-skip"><span class="cy-chip-icon">→</span><span class="cy-chip-num">${skipCount}</span><span class="cy-chip-label">跳过</span></span>
+                <span class="cy-chip cy-chip-defer"><span class="cy-chip-icon">⏳</span><span class="cy-chip-num">${deferCount}</span><span class="cy-chip-label">移后</span></span>
             `;
         }
         updateProgress();
@@ -447,14 +449,24 @@
         rollStableSuccessTarget();
     }
 
-    function showCountdown(hint, leftSec, phone) {
+    function showCountdown(hint, leftSec, phone, totalSec) {
         countdownActive = true;
         countdownLeftSec = Math.max(0, leftSec);
+        if (totalSec > 0) countdownTotalSec = totalSec;
+        const total = countdownTotalSec || countdownLeftSec || 1;
+        const ringOffset = COUNTDOWN_RING_LEN * (1 - countdownLeftSec / total);
         if (elStatus) {
             elStatus.classList.add('cy-waiting', 'cy-countdown-mode');
             elStatus.innerHTML =
                 `<div class="cy-status-count-label">${escapeHtml(hint)}</div>` +
+                `<div class="cy-countdown-visual">` +
+                `<svg class="cy-countdown-ring" viewBox="0 0 88 88" aria-hidden="true">` +
+                `<circle class="cy-ring-bg" cx="44" cy="44" r="38"/>` +
+                `<circle class="cy-ring-fg" cx="44" cy="44" r="38" ` +
+                `stroke-dasharray="${COUNTDOWN_RING_LEN}" stroke-dashoffset="${ringOffset}"/>` +
+                `</svg>` +
                 `<div class="cy-status-count-sec">${countdownLeftSec}<span class="cy-status-count-unit">秒</span></div>` +
+                `</div>` +
                 (phone ? `<div class="cy-status-count-sub">${escapeHtml(phone)}</div>` : '');
         }
         updateMiniButton();
@@ -463,6 +475,7 @@
     function hideCountdown() {
         countdownActive = false;
         countdownLeftSec = 0;
+        countdownTotalSec = 0;
         if (elStatus) {
             elStatus.classList.remove('cy-countdown-mode');
             elStatus.innerHTML = '';
@@ -481,6 +494,7 @@
         const startAt = Date.now();
         const minEndAt = startAt + totalSec * 1000;
         const hardEndAt = hardMaxSec > 0 ? startAt + hardMaxSec * 1000 : minEndAt;
+        countdownTotalSec = totalSec;
 
         while (Date.now() < hardEndAt) {
             if (stopRequested) {
@@ -496,7 +510,7 @@
 
             const displaySec = stillLimited && leftSec <= 0 ? hardLeftSec : leftSec;
             const hint = stillLimited && leftSec <= 0 ? '等待频繁提示消失' : label;
-            showCountdown(hint, displaySec, phone);
+            showCountdown(hint, displaySec, phone, totalSec);
             await delay(1000);
         }
         hideCountdown();
@@ -526,12 +540,7 @@
 
     function rateLimitWaitSec() {
         const span = PACE.rateLimitMaxSec - PACE.rateLimitMinSec + 1;
-        const base = PACE.rateLimitMinSec + Math.floor(Math.random() * span);
-        const extra = Math.min(
-            Math.max(0, consecutiveRateLimitHits - 1) * PACE.rateLimitStreakExtraSec,
-            120
-        );
-        return base + extra;
+        return PACE.rateLimitMinSec + Math.floor(Math.random() * span);
     }
 
     /** 稳定跑够本轮随机目标后，频繁过多才触发长冷却 */
@@ -554,7 +563,7 @@
     function cooldownDelayMs() {
         const jitter = PACE.cooldownJitterSec;
         const sec = PACE.cooldownCenterSec + (Math.random() * 2 - 1) * jitter;
-        return Math.round(Math.max(50, sec) * 1000);
+        return Math.round(Math.max(PACE.rateLimitMinSec, sec) * 1000);
     }
 
     async function forceRecoverStuck(phone) {
@@ -1706,220 +1715,287 @@
 
         const style = document.createElement('style');
         style.textContent = `
+            @keyframes cy-shimmer {
+                0% { background-position: 200% center; }
+                100% { background-position: -200% center; }
+            }
+            @keyframes cy-pulse-soft {
+                0%, 100% { opacity: 0.55; transform: scale(1); }
+                50% { opacity: 1; transform: scale(1.04); }
+            }
+            @keyframes cy-float {
+                0%, 100% { transform: translateY(0); }
+                50% { transform: translateY(-2px); }
+            }
             #cy-add-friend-panel {
                 position: fixed; top: 12px; right: 12px; z-index: 99999;
-                width: 376px; background: #ffffff;
-                border-radius: 20px; overflow: hidden;
-                border: 1px solid rgba(125,211,252,0.55);
+                width: 388px; background: rgba(255,255,255,0.97);
+                border-radius: 22px; overflow: hidden;
+                border: 1px solid rgba(125,211,252,0.65);
+                backdrop-filter: blur(14px);
                 box-shadow:
-                    0 24px 60px rgba(14,165,233,0.14),
-                    0 8px 24px rgba(15,23,42,0.08),
-                    inset 0 1px 0 rgba(255,255,255,0.9);
+                    0 28px 64px rgba(14,165,233,0.16),
+                    0 10px 28px rgba(15,23,42,0.08),
+                    inset 0 1px 0 rgba(255,255,255,0.95);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 position: relative; display: flex; align-items: center; justify-content: space-between;
-                padding: 16px 16px 15px; overflow: hidden; user-select: none;
-                background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 28%, #7dd3fc 62%, #38bdf8 100%);
-                border-bottom: 1px solid rgba(255,255,255,0.45);
+                padding: 17px 17px 16px; overflow: hidden; user-select: none;
+                background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 24%, #7dd3fc 58%, #38bdf8 100%);
+                border-bottom: 1px solid rgba(255,255,255,0.5);
             }
             #cy-add-friend-panel .cy-head::before {
                 content: ""; position: absolute; inset: 0; pointer-events: none;
                 background:
-                    radial-gradient(circle at 88% 18%, rgba(255,255,255,0.55) 0%, transparent 42%),
-                    radial-gradient(circle at 12% 85%, rgba(255,255,255,0.28) 0%, transparent 36%);
+                    radial-gradient(circle at 90% 12%, rgba(255,255,255,0.62) 0%, transparent 44%),
+                    radial-gradient(circle at 8% 88%, rgba(255,255,255,0.32) 0%, transparent 38%),
+                    radial-gradient(circle at 52% 120%, rgba(14,165,233,0.12) 0%, transparent 55%);
+            }
+            #cy-add-friend-panel .cy-head::after {
+                content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 1px;
+                background: linear-gradient(90deg, transparent, rgba(255,255,255,0.85), transparent);
             }
             #cy-add-friend-panel .cy-head-main { position: relative; z-index: 1; min-width: 0; }
             #cy-add-friend-panel .cy-head-title {
-                font-weight: 800; font-size: 18px; line-height: 1.15; letter-spacing: 0.02em;
-                color: #075985; text-shadow: 0 1px 0 rgba(255,255,255,0.45);
+                display: flex; align-items: center; gap: 8px;
+                font-weight: 800; font-size: 19px; line-height: 1.15; letter-spacing: 0.02em;
+                color: #075985; text-shadow: 0 1px 0 rgba(255,255,255,0.5);
+            }
+            #cy-add-friend-panel .cy-head-icon {
+                display: inline-flex; align-items: center; justify-content: center;
+                width: 28px; height: 28px; border-radius: 10px;
+                font-size: 14px; font-weight: 900; color: #0284c7;
+                background: rgba(255,255,255,0.72);
+                border: 1px solid rgba(255,255,255,0.9);
+                box-shadow: 0 2px 8px rgba(14,165,233,0.14);
+                animation: cy-float 3s ease-in-out infinite;
             }
             #cy-add-friend-panel .cy-head-sub {
                 display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-                margin-top: 6px; font-size: 11px; color: #0369a1;
+                margin-top: 7px; font-size: 11px; color: #0369a1;
             }
             #cy-add-friend-panel .cy-badge {
-                display: inline-flex; align-items: center; padding: 2px 8px;
+                display: inline-flex; align-items: center; padding: 2px 9px;
                 border-radius: 999px; font-size: 10px; font-weight: 700;
-                color: #0369a1; background: rgba(255,255,255,0.72);
-                border: 1px solid rgba(255,255,255,0.85);
-                box-shadow: 0 1px 2px rgba(14,165,233,0.12);
+                color: #0369a1; background: rgba(255,255,255,0.78);
+                border: 1px solid rgba(255,255,255,0.92);
+                box-shadow: 0 1px 3px rgba(14,165,233,0.14);
+            }
+            #cy-add-friend-panel .cy-ver {
+                padding: 2px 7px; border-radius: 999px; font-size: 10px; font-weight: 600;
+                color: #0c4a6e; background: rgba(255,255,255,0.45);
+                border: 1px solid rgba(255,255,255,0.6);
             }
             #cy-add-friend-panel .cy-head-btn {
                 position: relative; z-index: 1;
-                background: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.75);
-                color: #0369a1; width: 34px; height: 34px; border-radius: 11px; cursor: pointer;
+                background: rgba(255,255,255,0.58); border: 1px solid rgba(255,255,255,0.82);
+                color: #0369a1; width: 36px; height: 36px; border-radius: 12px; cursor: pointer;
                 line-height: 1; font-size: 20px; font-weight: 500; flex-shrink: 0;
-                box-shadow: 0 2px 8px rgba(14,165,233,0.12);
-                transition: background .15s ease, transform .12s ease;
+                box-shadow: 0 2px 10px rgba(14,165,233,0.14);
+                transition: background .15s ease, transform .12s ease, box-shadow .15s ease;
             }
             #cy-add-friend-panel .cy-head-btn:hover {
-                background: rgba(255,255,255,0.82); transform: translateY(-1px);
+                background: rgba(255,255,255,0.88); transform: translateY(-1px);
+                box-shadow: 0 4px 14px rgba(14,165,233,0.18);
             }
             #cy-add-friend-panel .cy-body {
-                padding: 14px; display: flex; flex-direction: column; gap: 11px;
-                background: linear-gradient(180deg, #f0f9ff 0%, #f8fafc 38%, #ffffff 100%);
+                padding: 15px; display: flex; flex-direction: column; gap: 12px;
+                background: linear-gradient(180deg, #eff8ff 0%, #f8fafc 42%, #ffffff 100%);
             }
             #cy-add-friend-panel .cy-card {
-                background: rgba(255,255,255,0.92); border: 1px solid #dbeafe;
-                border-radius: 16px; padding: 14px 14px 13px;
-                box-shadow: 0 2px 10px rgba(14,165,233,0.06);
+                background: rgba(255,255,255,0.94); border: 1px solid #dbeafe;
+                border-radius: 18px; padding: 15px 15px 14px;
+                box-shadow: 0 3px 14px rgba(14,165,233,0.07);
             }
             #cy-add-friend-panel .cy-progress-head {
                 display: flex; align-items: baseline; justify-content: space-between;
-                gap: 8px; margin-bottom: 11px;
+                gap: 8px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-progress-label {
                 font-size: 11px; font-weight: 700; color: #64748b;
-                letter-spacing: 0.06em; text-transform: uppercase;
+                letter-spacing: 0.08em; text-transform: uppercase;
             }
             #cy-add-friend-panel .cy-progress {
-                font-size: 17px; color: #0c4a6e; font-weight: 800; font-variant-numeric: tabular-nums;
+                font-size: 18px; color: #0c4a6e; font-weight: 800; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-stats {
-                display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 11px;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-chip {
-                display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 3px; padding: 8px 3px; border-radius: 12px;
-                border: 1px solid transparent; min-height: 54px; min-width: 0;
-                transition: transform .12s ease;
+                position: relative; display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 2px; padding: 9px 3px 8px; border-radius: 14px;
+                border: 1px solid transparent; min-height: 58px; min-width: 0;
+                transition: transform .14s ease, box-shadow .14s ease;
+            }
+            #cy-add-friend-panel .cy-chip:hover { transform: translateY(-1px); }
+            #cy-add-friend-panel .cy-chip-icon {
+                font-size: 10px; font-weight: 800; line-height: 1; opacity: 0.75;
             }
             #cy-add-friend-panel .cy-chip-num {
-                font-size: 17px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+                font-size: 18px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-chip-label {
-                font-size: 10px; font-weight: 600; opacity: 0.9;
+                font-size: 10px; font-weight: 600; opacity: 0.88;
             }
             #cy-add-friend-panel .cy-chip-ok {
                 background: linear-gradient(180deg,#ecfdf5,#d1fae5); border-color: #a7f3d0; color: #047857;
+                box-shadow: 0 2px 8px rgba(16,185,129,0.08);
             }
             #cy-add-friend-panel .cy-chip-fail {
                 background: linear-gradient(180deg,#fef2f2,#fee2e2); border-color: #fecaca; color: #b91c1c;
+                box-shadow: 0 2px 8px rgba(239,68,68,0.07);
             }
             #cy-add-friend-panel .cy-chip-skip {
                 background: linear-gradient(180deg,#f8fafc,#f1f5f9); border-color: #e2e8f0; color: #475569;
+                box-shadow: 0 2px 8px rgba(100,116,139,0.06);
             }
             #cy-add-friend-panel .cy-chip-defer {
                 background: linear-gradient(180deg,#fffbeb,#fef3c7); border-color: #fde68a; color: #b45309;
+                box-shadow: 0 2px 8px rgba(245,158,11,0.08);
             }
             #cy-add-friend-panel .cy-progress-track {
-                height: 8px; background: #e0f2fe; border-radius: 99px; overflow: hidden;
-                box-shadow: inset 0 1px 2px rgba(14,165,233,0.08);
+                height: 9px; background: #e0f2fe; border-radius: 99px; overflow: hidden;
+                box-shadow: inset 0 1px 3px rgba(14,165,233,0.1);
             }
             #cy-add-friend-panel .cy-progress-bar {
                 height: 100%; width: 0%; border-radius: 99px;
-                background: linear-gradient(90deg, #7dd3fc, #0ea5e9, #0284c7);
-                box-shadow: 0 0 10px rgba(14,165,233,0.35);
-                transition: width .35s ease;
+                background: linear-gradient(90deg, #7dd3fc, #0ea5e9, #0284c7, #0ea5e9);
+                background-size: 200% 100%;
+                animation: cy-shimmer 2.8s linear infinite;
+                box-shadow: 0 0 12px rgba(14,165,233,0.38);
+                transition: width .4s cubic-bezier(.4,0,.2,1);
             }
             #cy-add-friend-panel .cy-field-card {
-                background: rgba(255,255,255,0.94); border: 1px solid #dbeafe;
-                border-radius: 16px; padding: 12px 13px;
-                box-shadow: 0 2px 8px rgba(14,165,233,0.05);
+                background: rgba(255,255,255,0.96); border: 1px solid #dbeafe;
+                border-radius: 18px; padding: 13px 14px;
+                box-shadow: 0 2px 10px rgba(14,165,233,0.06);
                 box-sizing: border-box; min-width: 0;
             }
             #cy-add-friend-panel .cy-label {
                 display: block; margin-bottom: 8px; color: #0369a1;
-                font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+                font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
             }
             #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 82px; resize: vertical;
-                border: 1px solid #bfdbfe; border-radius: 12px; padding: 10px 12px;
-                font-size: 12px; line-height: 1.55; font-family: inherit;
-                background: #f8fbff; color: #0f172a;
+                width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical;
+                border: 1px solid #bfdbfe; border-radius: 14px; padding: 11px 13px;
+                font-size: 12px; line-height: 1.58; font-family: inherit;
+                background: linear-gradient(180deg,#f8fbff,#f0f9ff);
+                color: #0f172a;
                 transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
             }
             #cy-add-friend-panel textarea:focus {
                 outline: none; border-color: #38bdf8; background: #fff;
-                box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
+                box-shadow: 0 0 0 3px rgba(56,189,248,0.22);
             }
-            #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 8px; }
-            #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
+            #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 9px; }
+            #cy-add-friend-panel .cy-btns-row { display: flex; gap: 9px; }
             #cy-add-friend-panel button.cy-btn {
-                flex: 1; min-width: 0; padding: 11px 10px; border: none;
-                border-radius: 12px; cursor: pointer; color: #fff; font-size: 13px;
-                font-weight: 700; font-family: inherit;
-                box-shadow: 0 3px 10px rgba(15,23,42,0.1);
+                flex: 1; min-width: 0; padding: 12px 10px; border: none;
+                border-radius: 14px; cursor: pointer; color: #fff; font-size: 13px;
+                font-weight: 700; font-family: inherit; letter-spacing: 0.02em;
+                box-shadow: 0 4px 12px rgba(15,23,42,0.1);
                 transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
             }
             #cy-add-friend-panel button.cy-btn:hover:not(:disabled) {
-                filter: brightness(1.03); transform: translateY(-1px);
-                box-shadow: 0 5px 14px rgba(15,23,42,0.12);
+                filter: brightness(1.04); transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(15,23,42,0.13);
             }
             #cy-add-friend-panel button.cy-btn:active:not(:disabled) { transform: translateY(0); }
             #cy-add-friend-panel button.cy-btn:disabled:not(.cy-btn-stop) {
                 opacity: 0.46; cursor: not-allowed; transform: none; box-shadow: none;
             }
             #cy-add-friend-panel .cy-btn-import {
-                background: linear-gradient(180deg, #7dd3fc, #0ea5e9);
-                box-shadow: 0 3px 12px rgba(14,165,233,0.28);
+                background: linear-gradient(180deg, #93c5fd, #0ea5e9);
+                box-shadow: 0 4px 14px rgba(14,165,233,0.3);
             }
             #cy-add-friend-panel .cy-btn-clear { background: linear-gradient(180deg,#94a3b8,#64748b); }
             #cy-add-friend-panel .cy-btn-start {
                 background: linear-gradient(180deg,#4ade80,#16a34a);
-                box-shadow: 0 3px 12px rgba(22,163,74,0.22);
+                box-shadow: 0 4px 14px rgba(22,163,74,0.24);
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop {
                 background: linear-gradient(180deg,#fb7185,#e11d48) !important;
-                box-shadow: 0 3px 12px rgba(225,29,72,0.2) !important;
+                box-shadow: 0 4px 14px rgba(225,29,72,0.22) !important;
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop:disabled {
                 opacity: 0.48 !important; cursor: not-allowed !important;
                 transform: none !important; box-shadow: none !important;
             }
             #cy-add-friend-panel .cy-status {
-                padding: 14px 16px; background: rgba(255,255,255,0.95);
-                border: 1px solid #dbeafe; border-radius: 16px;
+                padding: 14px 16px; background: rgba(255,255,255,0.96);
+                border: 1px solid #dbeafe; border-radius: 18px;
                 font-size: 13px; color: #334155;
-                min-height: 62px; word-break: break-all; line-height: 1.62;
-                font-weight: 500; box-shadow: 0 2px 8px rgba(14,165,233,0.05);
+                min-height: 64px; word-break: break-all; line-height: 1.62;
+                font-weight: 500; box-shadow: 0 2px 10px rgba(14,165,233,0.06);
             }
             #cy-add-friend-panel .cy-status.cy-busy {
                 border-color: #7dd3fc; background: linear-gradient(180deg,#f0f9ff,#e0f2fe);
                 color: #0369a1; font-weight: 600;
             }
             #cy-add-friend-panel .cy-status.cy-countdown-mode {
-                text-align: center; border-color: #fcd34d;
-                background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-                color: #92400e; min-height: 110px;
+                text-align: center; border-color: #fbbf24;
+                background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 55%, #fde68a 100%);
+                color: #92400e; min-height: 128px;
                 display: flex; flex-direction: column; align-items: center; justify-content: center;
-                box-shadow: 0 4px 16px rgba(245,158,11,0.12);
+                box-shadow: 0 6px 20px rgba(245,158,11,0.14);
             }
             #cy-add-friend-panel .cy-status-count-label {
-                font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 6px;
+                font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 8px;
+                letter-spacing: 0.03em;
+            }
+            #cy-add-friend-panel .cy-countdown-visual {
+                position: relative; width: 96px; height: 96px;
+                display: flex; align-items: center; justify-content: center;
+            }
+            #cy-add-friend-panel .cy-countdown-ring {
+                position: absolute; inset: 0; width: 100%; height: 100%;
+                transform: rotate(-90deg);
+            }
+            #cy-add-friend-panel .cy-ring-bg {
+                fill: none; stroke: rgba(251,191,36,0.28); stroke-width: 6;
+            }
+            #cy-add-friend-panel .cy-ring-fg {
+                fill: none; stroke: #f59e0b; stroke-width: 6; stroke-linecap: round;
+                transition: stroke-dashoffset .85s linear;
+                filter: drop-shadow(0 0 4px rgba(245,158,11,0.35));
             }
             #cy-add-friend-panel .cy-status-count-sec {
-                font-size: 46px; font-weight: 800; line-height: 1;
+                position: relative; z-index: 1;
+                font-size: 32px; font-weight: 800; line-height: 1;
                 color: #d97706; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-status-count-unit {
-                font-size: 15px; font-weight: 700; margin-left: 3px; color: #b45309;
+                font-size: 13px; font-weight: 700; margin-left: 2px; color: #b45309;
             }
             #cy-add-friend-panel .cy-status-count-sub {
-                margin-top: 8px; font-size: 12px; color: #92400e; opacity: 0.92;
+                margin-top: 10px; font-size: 12px; color: #92400e; opacity: 0.92;
                 max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+                padding: 0 8px;
             }
             #cy-mini-btn {
                 position: fixed; left: 12px; bottom: 72px; z-index: 9999;
-                width: 50px; height: 50px; border-radius: 50%; border: none;
-                background: linear-gradient(145deg, #7dd3fc, #0ea5e9);
+                width: 54px; height: 54px; border-radius: 50%; border: none;
+                background: linear-gradient(145deg, #93c5fd, #0ea5e9);
                 color: #fff; cursor: pointer;
-                box-shadow: 0 8px 22px rgba(14,165,233,0.32);
+                box-shadow: 0 10px 26px rgba(14,165,233,0.34);
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
+                transition: transform .15s ease, box-shadow .15s ease;
             }
+            #cy-mini-btn:hover { transform: scale(1.05); }
             #cy-mini-btn.cy-visible { display: flex; }
             #cy-mini-btn.cy-running {
-                box-shadow: 0 0 0 4px rgba(125,211,252,0.35), 0 8px 22px rgba(14,165,233,0.32);
+                box-shadow: 0 0 0 4px rgba(125,211,252,0.38), 0 10px 26px rgba(14,165,233,0.34);
             }
             #cy-mini-btn.cy-waiting {
-                background: linear-gradient(145deg, #fbbf24, #f59e0b);
-                box-shadow: 0 0 0 4px rgba(251,191,36,0.28), 0 8px 22px rgba(245,158,11,0.28);
+                background: linear-gradient(145deg, #fcd34d, #f59e0b);
+                box-shadow: 0 0 0 5px rgba(251,191,36,0.28), 0 10px 26px rgba(245,158,11,0.3);
+                animation: cy-pulse-soft 1.6s ease-in-out infinite;
             }
-            #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 800; }
+            #cy-mini-btn .cy-mini-main { font-size: 13px; font-weight: 800; }
             #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.96; }
         `;
         document.head.appendChild(style);
@@ -1931,10 +2007,11 @@
         head.className = 'cy-head';
         head.innerHTML = `
             <div class="cy-head-main">
-                <div class="cy-head-title">畅言加好友</div>
+                <div class="cy-head-title"><span class="cy-head-icon">✦</span>畅言加好友</div>
                 <div class="cy-head-sub">
                     <span class="cy-badge">阿陌专用</span>
-                    <span>后台稳定版 ${SCRIPT_VERSION}</span>
+                    <span class="cy-ver">v${SCRIPT_VERSION}</span>
+                    <span>后台稳定版</span>
                 </div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
