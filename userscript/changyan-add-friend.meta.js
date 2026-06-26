@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.11
-// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度
+// @version      9.16.0
+// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度（9.16 优化 DOM/轮询/缓存）
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
