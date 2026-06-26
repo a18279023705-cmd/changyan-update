@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.3
-// @description  畅言加好友阿陌专用，修复提交未完成就处理下一号
+// @version      9.20.4
+// @description  畅言加好友阿陌专用，修复切页回来重复添加同一号
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.3';
+    const SCRIPT_VERSION = '9.20.4';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -65,6 +65,7 @@
     const STORAGE_KEY = 'changyan_add_friend_talks';
     const PROGRESS_STORAGE_KEY = 'changyan_add_friend_progress';
     const PHONE_LIST_STORAGE_KEY = 'changyan_add_friend_phones';
+    const SESSION_DONE_KEY = 'changyan_add_friend_session_done';
     const TAB_ID_KEY = 'changyan_add_friend_tab_id';
     const XLSX_CDN_LIST = [
         'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -96,6 +97,8 @@
     let progressBackupTimer = null;
     let lastStatsKey = '';
     let lastProgressKey = '';
+    let inFlightPhone = '';
+    let sessionDoneKeys = new Set();
 
     const RATE_LIMIT_HINTS = [
         '请不要频繁点击',
@@ -236,8 +239,124 @@
         }
     }
 
+    function loadSessionDone() {
+        try {
+            const raw = sessionStorage.getItem(SESSION_DONE_KEY);
+            sessionDoneKeys = new Set(JSON.parse(raw || '[]'));
+        } catch (e) {
+            sessionDoneKeys = new Set();
+        }
+    }
+
+    function saveSessionDone() {
+        try {
+            sessionStorage.setItem(SESSION_DONE_KEY, JSON.stringify([...sessionDoneKeys]));
+        } catch (e) {}
+    }
+
+    function markSessionDone(phone) {
+        if (!phone) return;
+        sessionDoneKeys.add(phoneKey(phone));
+        saveSessionDone();
+    }
+
+    function isSessionDone(phone) {
+        return sessionDoneKeys.has(phoneKey(phone));
+    }
+
+    function clearSessionDone() {
+        sessionDoneKeys = new Set();
+        try { sessionStorage.removeItem(SESSION_DONE_KEY); } catch (e) {}
+    }
+
+    async function waitUntilTabActive() {
+        while (document.visibilityState === 'hidden' && running && !stopRequested) {
+            saveProgress(true);
+            await delay(400);
+        }
+        try {
+            if (window.__cyAudioKeepAlive?.state === 'suspended') {
+                await window.__cyAudioKeepAlive.resume();
+            }
+        } catch (e) {}
+    }
+
+    function clearInFlightPhone() {
+        if (!inFlightPhone) return;
+        inFlightPhone = '';
+        saveProgress();
+    }
+
+    function setInFlightPhone(phone) {
+        inFlightPhone = phone || '';
+        saveProgress(true);
+    }
+
     function phoneKey(id) {
         return /^1[3-9]\d{9}$/.test(id) ? id : String(id).toLowerCase();
+    }
+
+    /** 切页回来：申请页/提交中则续提，不重新搜索 */
+    async function resumeInFlightApply(phone) {
+        if (detectRateLimit()) return 'rate_limit';
+
+        if (isFinishButtonLoading() || isSubmitInProgress()) {
+            setStatus(`续等提交: ${phone}`);
+            if (await waitSubmitComplete(phone)) {
+                clearSearchInput();
+                return 'success';
+            }
+            return detectRateLimit() ? 'rate_limit' : 'retry';
+        }
+
+        if (!isFriendApplyRouteOpen()) return null;
+
+        const input = getFriendApplyRemarkInput();
+        if (input && talkList.length) {
+            const msg = talkList[talkIndex % talkList.length];
+            if (!remarkValueMatches(readInputValue(input), msg)) {
+                await fillRemarkInput(input, msg);
+            }
+        }
+
+        if (!(await clickFinishButton(PACE.friendApplyWaitMs))) return 'retry';
+        if (!(await waitSubmitComplete(phone))) {
+            return detectRateLimit() ? 'rate_limit' : 'retry';
+        }
+        clearSearchInput();
+        return 'success';
+    }
+
+    async function runAttemptWithGuards(phone) {
+        const startAt = Date.now();
+        let attemptPromise = null;
+
+        const launch = () => {
+            attemptPromise = addFriendAttempt(phone);
+            return attemptPromise;
+        };
+        launch();
+
+        while (true) {
+            await waitUntilTabActive();
+            if (stopRequested) return 'retry';
+
+            const raced = await Promise.race([
+                attemptPromise.then(result => ({ type: 'done', result })),
+                delay(800).then(() => ({ type: 'tick' })),
+            ]);
+
+            if (raced.type === 'done') return raced.result;
+
+            if (isSubmitInProgress() || countdownActive || document.visibilityState === 'hidden') {
+                continue;
+            }
+
+            if (Date.now() - startAt > PACE.stuckForceMs) {
+                await forceRecoverStuck(phone);
+                return 'retry';
+            }
+        }
     }
 
     function statsLine() {
@@ -734,6 +853,7 @@
             frequentHitCount,
             rateLimitRoundCount,
             consecutiveRateLimitHits,
+            inFlightPhone,
         };
     }
 
@@ -752,6 +872,7 @@
         frequentHitCount = data.frequentHitCount || 0;
         rateLimitRoundCount = data.rateLimitRoundCount || 0;
         consecutiveRateLimitHits = data.consecutiveRateLimitHits || 0;
+        inFlightPhone = data.inFlightPhone || '';
         if (!stableSuccessTarget) rollStableSuccessTarget();
         updateStats();
         updateStartButtonLabel();
@@ -867,6 +988,8 @@
             localStorage.removeItem(`${progressBackupKey()}_state`);
             localStorage.removeItem(`${progressBackupKey()}_phones`);
             localStorage.removeItem(PROGRESS_STORAGE_KEY);
+            clearSessionDone();
+            inFlightPhone = '';
         } catch (e) {}
         updateStartButtonLabel();
     }
@@ -881,7 +1004,16 @@
         };
         window.addEventListener('pagehide', flush);
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') flush();
+            if (document.visibilityState === 'hidden') {
+                flush();
+                return;
+            }
+            if (running) {
+                startKeepAlive();
+                if (inFlightPhone && (isSubmitInProgress() || isFriendApplyRouteOpen())) {
+                    setStatus(`已回到页面，续等: ${inFlightPhone}`);
+                }
+            }
         });
     }
 
@@ -1433,7 +1565,27 @@
      * retry        → 未完成添加，清弹窗后重试当前号
      */
     async function addFriendAttempt(phone) {
+        await waitUntilTabActive();
         if (detectRateLimit()) return 'rate_limit';
+
+        if (isSessionDone(phone)) {
+            clearInFlightPhone();
+            return 'success';
+        }
+
+        if (inFlightPhone && inFlightPhone !== phone && (isSubmitInProgress() || isFriendApplyRouteOpen())) {
+            setStatus(`等待 ${inFlightPhone} 提交完成…`);
+            await waitSubmitComplete(inFlightPhone);
+        }
+
+        if (inFlightPhone === phone) {
+            const resumed = await resumeInFlightApply(phone);
+            if (resumed) {
+                clearInFlightPhone();
+                if (resumed === 'success') markSessionDone(phone);
+                return resumed;
+            }
+        }
 
         if (isFinishButtonLoading()) {
             setStatus(`上一号仍在提交，等待…`);
@@ -1442,6 +1594,8 @@
                 return 'retry';
             }
         }
+
+        setInFlightPhone(phone);
 
         const input = findSearchInput() || await waitForSelector(SEARCH_INPUT_SEL);
         if (!input) return 'retry';
@@ -1508,6 +1662,7 @@
 
         await delay(PACE.typingAfterMs);
         clearSearchInput(input);
+        clearInFlightPhone();
         setStatus('添加成功: ' + phone);
         return 'success';
     }
@@ -1534,6 +1689,7 @@
             talkIndex = 0;
             resetFrequentTracking();
             clearDeferredStats();
+            clearSessionDone();
             clearProgress();
         }
 
@@ -1569,6 +1725,14 @@
             const phone = phoneList[phoneIndex];
             updateStats();
 
+            await waitUntilTabActive();
+
+            if (isSessionDone(phone)) {
+                phoneIndex++;
+                saveProgress();
+                continue;
+            }
+
             if (detectRateLimit(true)) {
                 await onRateLimitHit(phone);
                 continue;
@@ -1581,21 +1745,12 @@
 
             setStatus(`处理: ${phone}`);
 
-            const attemptResult = await Promise.race([
-                addFriendAttempt(phone).then(result => ({ type: 'done', result })),
-                delay(PACE.stuckForceMs).then(() => ({ type: 'stuck' })),
-            ]);
-
-            if (attemptResult.type === 'stuck') {
-                await forceRecoverStuck(phone);
-                saveProgress(true);
-                continue;
-            }
-
-            const result = attemptResult.result;
+            const result = await runAttemptWithGuards(phone);
 
             if (result === 'success') {
                 markPhoneCompleted(phone);
+                markSessionDone(phone);
+                clearInFlightPhone();
                 successCount++;
                 successSinceCooldown++;
                 phoneIndex++;
@@ -1607,6 +1762,8 @@
                 await delay(PACE.afterSuccessMs);
             } else if (result === 'not_found') {
                 markPhoneCompleted(phone);
+                markSessionDone(phone);
+                clearInFlightPhone();
                 failCount++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
@@ -1617,6 +1774,8 @@
                 await delay(PACE.afterNotFoundMs);
             } else if (result === 'already_friend') {
                 markPhoneCompleted(phone);
+                markSessionDone(phone);
+                clearInFlightPhone();
                 skipCount++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
@@ -1645,6 +1804,8 @@
 
         if (!stopRequested && phoneIndex >= phoneList.length) {
             setStatus(`全部完成 | ${statsLine()}`);
+            clearInFlightPhone();
+            clearSessionDone();
             clearProgress();
         }
 
@@ -2399,6 +2560,7 @@
 
     async function boot() {
         getTabId();
+        loadSessionDone();
         bindProgressGuard();
         const ok = await checkForceUpdate();
         if (!ok) return;
