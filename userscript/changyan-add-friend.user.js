@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.5
-// @description  畅言加好友阿陌专用，修复资料页未加载就误判重试
+// @version      9.20.6
+// @description  畅言加好友阿陌专用，强化添加好友按钮查找与点击
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.5';
+    const SCRIPT_VERSION = '9.20.6';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -43,7 +43,7 @@
         afterDeferMs: 1500,
         afterRetryMs: 900,
         searchWaitMs: 520,
-        searchProfileWaitMs: 7000,
+        searchProfileWaitMs: 10000,
         actionWaitMs: 700,
         friendApplyWaitMs: 4500,
         actionSettleMs: 360,
@@ -1042,8 +1042,198 @@
 
     function findSearchInput() {
         if (cachedSearchInput && document.contains(cachedSearchInput)) return cachedSearchInput;
-        cachedSearchInput = document.querySelector(SEARCH_INPUT_SEL);
+        cachedSearchInput = getFriendAddSearchInput() || document.querySelector(SEARCH_INPUT_SEL);
         return cachedSearchInput;
+    }
+
+    function getFriendAddSearchInput() {
+        return document.querySelector(
+            '.wk-friendadd .wk-search-input input, .wk-friendadd .wk-search-input textarea, ' +
+            '.wk-friendadd .semi-input input, .wk-friendadd .semi-input textarea'
+        );
+    }
+
+    function findFriendAddInstance() {
+        const root = document.querySelector('.wk-friendadd');
+        if (!root) return null;
+        const seen = new Set();
+        const walk = (fiber, depth = 0) => {
+            if (!fiber || depth > 50 || seen.has(fiber)) return null;
+            seen.add(fiber);
+            const node = fiber.stateNode;
+            if (node?.searchUser && typeof node.setState === 'function') return node;
+            return walk(fiber.child, depth + 1)
+                || walk(fiber.sibling, depth + 1)
+                || walk(fiber.return, depth + 1);
+        };
+        return walk(getReactFiber(root));
+    }
+
+    function normalizeUiText(el) {
+        return (el?.textContent || '').replace(/\s+/g, '').trim();
+    }
+
+    function isVisibleUiEl(el) {
+        if (!el || isOurUI(el)) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 2 && r.height > 2;
+    }
+
+    function findTextTargetInRoot(root, texts, { exact = true } = {}) {
+        if (!root) return null;
+        const nodes = root.querySelectorAll(
+            'button, .semi-button, [role="button"], a, div, span, p, li'
+        );
+        let best = null;
+        let bestArea = Infinity;
+        for (const el of nodes) {
+            if (isOurUI(el)) continue;
+            const text = normalizeUiText(el);
+            if (!text) continue;
+            const matched = exact
+                ? texts.some(t => text === String(t).replace(/\s+/g, ''))
+                : texts.some(t => text.includes(String(t).replace(/\s+/g, '')));
+            if (!matched) continue;
+            if (!isVisibleUiEl(el)) continue;
+            const r = el.getBoundingClientRect();
+            const area = r.width * r.height;
+            if (area < bestArea) {
+                best = el;
+                bestArea = area;
+            }
+        }
+        return best;
+    }
+
+    async function simulateEnterSearch(input, keyword) {
+        let el = input;
+        for (let i = 0; i < 14 && el; i++) {
+            const props = getReactProps(el);
+            if (props?.onEnterPress) {
+                props.onEnterPress();
+                await delay(320);
+                return true;
+            }
+            el = el.parentElement;
+        }
+
+        ['keydown', 'keypress', 'keyup'].forEach(type => {
+            input.dispatchEvent(new KeyboardEvent(type, {
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+            }));
+        });
+        await delay(320);
+
+        const friendAdd = findFriendAddInstance();
+        if (friendAdd) {
+            await new Promise(resolve => {
+                try {
+                    friendAdd.setState({ keyword }, () => {
+                        Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
+                    });
+                } catch (e) {
+                    resolve();
+                }
+            });
+            return true;
+        }
+        return false;
+    }
+
+    async function submitSearch(input, phone) {
+        setInputValue(input, phone);
+        await delay(PACE.typingMs);
+        if (input.closest?.('.wk-friendadd') || getFriendAddSearchInput() === input) {
+            await simulateEnterSearch(input, phone);
+            await delay(1200);
+            return;
+        }
+        await setInputValueAndEnter(input, phone);
+    }
+
+    async function humanClick(el) {
+        if (!el) return false;
+        try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e) {
+            try { el.scrollIntoView(); } catch (e2) {}
+        }
+        await delay(100);
+        const r = el.getBoundingClientRect();
+        const x = r.left + Math.max(4, r.width / 2);
+        const y = r.top + Math.max(4, r.height / 2);
+        const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+        for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+            const Cls = type.startsWith('pointer') ? PointerEvent : MouseEvent;
+            el.dispatchEvent(new Cls(type, opts));
+        }
+        let node = el;
+        for (let i = 0; i < 16 && node; i++) {
+            const props = getReactProps(node);
+            if (props?.onClick) {
+                try { props.onClick({}); } catch (e) {}
+                try { props.onClick({ nativeEvent: {}, target: el, currentTarget: node }); } catch (e) {}
+            }
+            node = node.parentElement;
+        }
+        try { el.click(); } catch (e) {}
+        return true;
+    }
+
+    function findAddFriendButton() {
+        const footerSelectors = [
+            '.wk-userinfo-footer-sendbutton',
+            '.wk-userInfo-footer-sendbutton',
+            '.wk-userinfo-footer',
+            '.wk-userInfo-footer',
+            '.wk-userinfo',
+            '.wk-userInfo',
+            '.wk-userInfo-content',
+            '.wk-userinfo-content',
+        ];
+        for (const sel of footerSelectors) {
+            const roots = document.querySelectorAll(sel);
+            for (const root of roots) {
+                const hit = findTextTargetInRoot(root, ['添加好友'], { exact: true });
+                if (hit) return hit;
+            }
+        }
+        return findTextTargetInRoot(document.body, ['添加好友'], { exact: true });
+    }
+
+    async function clickAddFriendButton(phone) {
+        const endAt = Date.now() + PACE.searchProfileWaitMs;
+        while (Date.now() < endAt) {
+            if (isFriendApplyRouteOpen()) return true;
+
+            const target = findAddFriendButton();
+            if (target) {
+                setStatus(`点击添加好友: ${phone}`);
+                await humanClick(target);
+                await delay(PACE.actionSettleMs);
+
+                const verifyEnd = Date.now() + PACE.friendApplyWaitMs;
+                while (Date.now() < verifyEnd) {
+                    if (isFriendApplyRouteOpen()) return true;
+                    if (detectRateLimit()) return 'rate_limit';
+                    await delay(PACE.pollFastMs);
+                }
+
+                const retryTarget = findAddFriendButton();
+                if (retryTarget) {
+                    setStatus(`再次点击添加好友: ${phone}`);
+                    await humanClick(retryTarget);
+                    await delay(PACE.actionSettleMs);
+                    if (isFriendApplyRouteOpen()) return true;
+                }
+                return false;
+            }
+
+            if (findExistingFriendPanel()) return false;
+            const blocked = checkRateLimitOrNotFound();
+            if (blocked) return blocked;
+            setStatus(`等待资料页「添加好友」: ${phone}`);
+            await delay(PACE.pollNormalMs);
+        }
+        return null;
     }
 
     function clearSearchInput(input) {
@@ -1128,56 +1318,6 @@
         }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
         syncReactInputValue(input, value);
-    }
-
-    function findAddFriendButton(root = document) {
-        const scopes = [
-            ...document.querySelectorAll(
-                '.wk-userinfo-footer-sendbutton, .wk-userInfo-footer, .wk-userinfo, .wk-userInfo'
-            ),
-            root,
-        ];
-        for (const scope of scopes) {
-            const nodes = scope.querySelectorAll(
-                'button, .semi-button, [role="button"], a, .wk-userinfo-footer-sendbutton, .wk-userInfo-footer-sendbutton'
-            );
-            for (const el of nodes) {
-                if (isOurUI(el)) continue;
-                const text = (el.innerText || el.textContent || '').replace(/\s+/g, '').trim();
-                if (text !== '添加好友' && !text.includes('添加好友')) continue;
-                const r = el.getBoundingClientRect();
-                if (r.width <= 0 || r.height <= 0) continue;
-                if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
-                if (el.classList.contains('semi-button-disabled')) continue;
-                return el;
-            }
-        }
-        return null;
-    }
-
-    async function clickAddFriendButton(phone) {
-        const endAt = Date.now() + PACE.searchProfileWaitMs;
-        while (Date.now() < endAt) {
-            const btn = findAddFriendButton();
-            if (btn) {
-                setStatus(`点击添加好友: ${phone}`);
-                const props = getReactProps(btn);
-                try {
-                    if (props?.onClick) props.onClick({});
-                    else btn.click();
-                } catch (e) {
-                    btn.click();
-                }
-                await delay(PACE.actionSettleMs);
-                return true;
-            }
-            if (findExistingFriendPanel()) return false;
-            const blocked = checkRateLimitOrNotFound();
-            if (blocked) return blocked;
-            setStatus(`等待资料页「添加好友」: ${phone}`);
-            await delay(PACE.pollNormalMs);
-        }
-        return null;
     }
 
     /** 回车后轮询到用户资料页：优先等「添加好友」，勿与已是好友面板混淆 */
@@ -1656,11 +1796,15 @@
         const current = readInputValue(input);
         let outcome;
         if (current === phone) {
-            // 搜索框已是当前号：不再按回车，避免同一号连续提交
             outcome = await waitSearchOutcome(phone, true);
+            if (!outcome && !findAddFriendButton() && !isFriendApplyRouteOpen()) {
+                await submitSearch(input, phone);
+                invalidateVisibleTextCache();
+                outcome = await waitSearchOutcome(phone, true);
+            }
         } else {
             if (current) clearSearchInput(input);
-            await setInputValueAndEnter(input, phone);
+            await submitSearch(input, phone);
             invalidateVisibleTextCache();
             outcome = await waitSearchOutcome(phone, true);
         }
