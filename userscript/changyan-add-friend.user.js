@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.17.0
-// @description  畅言加好友阿陌专用，频繁必等提示消失+缓冲，移后补扫，暂停保存进度（9.17 频控稳定性）
+// @version      9.17.1
+// @description  畅言加好友阿陌专用，频繁必等+面板倒计时，移后补扫，暂停保存进度
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.17.0';
+    const SCRIPT_VERSION = '9.17.1';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
@@ -119,6 +119,12 @@
     let elMiniBtn = null;
     let elTalk = null;
     let elStatus = null;
+    let elCountdown = null;
+    let elCountdownSec = null;
+    let elCountdownHint = null;
+    let elCountdownPhone = null;
+    let countdownActive = false;
+    let countdownLeftSec = 0;
     let elProgress = null;
     let elProgressBar = null;
     let elStats = null;
@@ -244,6 +250,11 @@
 
     function updateMiniButton() {
         if (!elMiniBtn) return;
+        if (countdownActive && countdownLeftSec > 0) {
+            elMiniBtn.innerHTML = `<span class="cy-mini-main">${countdownLeftSec}s</span><span class="cy-mini-sub">等待</span>`;
+            elMiniBtn.classList.add('cy-running');
+            return;
+        }
         if (running) {
             elMiniBtn.innerHTML = `<span class="cy-mini-main">畅言</span><span class="cy-mini-sub">${successCount}/${phoneList.length || 0}</span>`;
             elMiniBtn.classList.add('cy-running');
@@ -427,6 +438,59 @@
         rollStableSuccessTarget();
     }
 
+    function showCountdown(hint, leftSec, phone) {
+        countdownActive = true;
+        countdownLeftSec = Math.max(0, leftSec);
+        if (elCountdown) elCountdown.classList.add('cy-visible');
+        if (elCountdownHint) elCountdownHint.textContent = hint || '等待中';
+        if (elCountdownSec) elCountdownSec.textContent = String(countdownLeftSec);
+        if (elCountdownPhone) elCountdownPhone.textContent = phone ? `当前: ${phone}` : '';
+        updateMiniButton();
+    }
+
+    function hideCountdown() {
+        countdownActive = false;
+        countdownLeftSec = 0;
+        if (elCountdown) elCountdown.classList.remove('cy-visible');
+        updateMiniButton();
+    }
+
+    /** 统一倒计时：每秒刷新面板大数字 + 状态栏 + 最小化按钮 */
+    async function runCountdownWait({
+        label,
+        totalSec,
+        phone = '',
+        alsoWaitClear = false,
+        hardMaxSec = 0,
+    }) {
+        const startAt = Date.now();
+        const minEndAt = startAt + totalSec * 1000;
+        const hardEndAt = hardMaxSec > 0 ? startAt + hardMaxSec * 1000 : minEndAt;
+
+        while (Date.now() < hardEndAt) {
+            if (stopRequested) {
+                hideCountdown();
+                return;
+            }
+            invalidateVisibleTextCache();
+            const stillLimited = alsoWaitClear && detectRateLimit(true);
+            const leftSec = Math.max(0, Math.ceil((minEndAt - Date.now()) / 1000));
+            const hardLeftSec = Math.max(0, Math.ceil((hardEndAt - Date.now()) / 1000));
+
+            if (!stillLimited && Date.now() >= minEndAt) break;
+
+            const displaySec = stillLimited && leftSec <= 0 ? hardLeftSec : leftSec;
+            const hint = stillLimited && leftSec <= 0 ? '等待频繁提示消失' : label;
+            showCountdown(hint, displaySec, phone);
+            setStatus(
+                `${label} · 倒计时 ${displaySec}s · ${phone}` +
+                (stillLimited ? ' · 提示未消失' : '')
+            );
+            await delay(1000);
+        }
+        hideCountdown();
+    }
+
     function rateLimitWaitSec() {
         const span = PACE.rateLimitMaxSec - PACE.rateLimitMinSec + 1;
         const base = PACE.rateLimitMinSec + Math.floor(Math.random() * span);
@@ -442,26 +506,13 @@
         invalidateVisibleTextCache();
         await dismissOverlaySafely();
         clearSearchInput();
-
-        const minSec = rateLimitWaitSec();
-        const minEndAt = Date.now() + minSec * 1000;
-        const hardEndAt = Date.now() + PACE.rateLimitClearMaxSec * 1000;
-
-        while (Date.now() < hardEndAt) {
-            if (stopRequested) return;
-            invalidateVisibleTextCache();
-            const stillLimited = detectRateLimit(true);
-            const leftMin = Math.max(0, Math.ceil((minEndAt - Date.now()) / 1000));
-
-            if (stillLimited) {
-                setStatus(`频繁限制 · 等待提示消失${leftMin > 0 ? ` · 缓冲 ${leftMin}s` : ''} · ${phone}`);
-            } else if (Date.now() < minEndAt) {
-                setStatus(`频繁限制 · 缓冲 ${leftMin}s · ${phone}`);
-            } else {
-                break;
-            }
-            await delay(500);
-        }
+        await runCountdownWait({
+            label: '频繁限制',
+            totalSec: rateLimitWaitSec(),
+            phone,
+            alsoWaitClear: true,
+            hardMaxSec: PACE.rateLimitClearMaxSec,
+        });
     }
 
     /** 稳定跑够本轮随机目标后，频繁过多才触发长冷却 */
@@ -489,16 +540,12 @@
 
     async function waitRateLimitCooldown(phone) {
         await dismissOverlaySafely();
-        const totalMs = cooldownDelayMs();
-        const endAt = Date.now() + totalMs;
-        while (Date.now() < endAt) {
-            if (stopRequested) return;
-            const leftSec = Math.ceil((endAt - Date.now()) / 1000);
-            setStatus(
-                `频繁过多 · 冷却 ${leftSec} 秒后继续（约 ${PACE.cooldownCenterSec} 秒） · ${phone}`
-            );
-            await delay(1000);
-        }
+        const totalSec = Math.max(1, Math.round(cooldownDelayMs() / 1000));
+        await runCountdownWait({
+            label: '频繁过多 · 长冷却',
+            totalSec,
+            phone,
+        });
         resetFrequentTracking();
     }
 
@@ -1816,6 +1863,23 @@
             #cy-add-friend-panel .cy-status.cy-waiting {
                 color: #0369a1; font-weight: 700; background: #f0f9ff;
             }
+            #cy-add-friend-panel .cy-countdown {
+                display: none; margin-bottom: 10px; padding: 12px 14px;
+                border-radius: 12px; border: 2px solid #f59e0b;
+                background: linear-gradient(180deg, #fffbeb, #fef3c7);
+                text-align: center; box-shadow: 0 4px 14px rgba(245,158,11,0.18);
+            }
+            #cy-add-friend-panel .cy-countdown.cy-visible { display: block; }
+            #cy-add-friend-panel .cy-countdown-hint {
+                font-size: 13px; font-weight: 700; color: #b45309; margin-bottom: 4px;
+            }
+            #cy-add-friend-panel .cy-countdown-sec {
+                font-size: 42px; font-weight: 800; line-height: 1.1;
+                color: #d97706; font-variant-numeric: tabular-nums;
+            }
+            #cy-add-friend-panel .cy-countdown-phone {
+                margin-top: 6px; font-size: 12px; color: #92400e; word-break: break-all;
+            }
             #cy-mini-btn {
                 position: fixed; left: 8px; bottom: 68px; z-index: 9999;
                 width: 44px; height: 44px; border-radius: 50%; border: none;
@@ -1918,9 +1982,21 @@
         elStatus.className = 'cy-status';
         elStatus.textContent = '请先导入号码并填写话术';
 
+        elCountdown = document.createElement('div');
+        elCountdown.className = 'cy-countdown';
+        elCountdownHint = document.createElement('div');
+        elCountdownHint.className = 'cy-countdown-hint';
+        elCountdownHint.textContent = '频繁限制';
+        elCountdownSec = document.createElement('div');
+        elCountdownSec.className = 'cy-countdown-sec';
+        elCountdownSec.textContent = '0';
+        elCountdownPhone = document.createElement('div');
+        elCountdownPhone.className = 'cy-countdown-phone';
+        elCountdown.append(elCountdownHint, elCountdownSec, elCountdownPhone);
+
         const innerFrame = document.createElement('div');
         innerFrame.className = 'cy-inner-frame';
-        innerFrame.append(progressCard, splitRow, btnsWrap, elStatus);
+        innerFrame.append(progressCard, splitRow, btnsWrap, elCountdown, elStatus);
         body.append(innerFrame);
         panel.append(head, body);
         document.body.appendChild(panel);
