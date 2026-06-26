@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.6
-// @description  畅言加好友阿陌专用，强化添加好友按钮查找与点击
+// @version      9.20.7
+// @description  畅言加好友阿陌专用，修复申请页验证消息话术未填入
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.6';
+    const SCRIPT_VERSION = '9.20.7';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -55,7 +55,8 @@
         panelCloseMinMs: 350,
         panelCloseRetryMs: 450,
         remarkCheckMs: 220,
-        remarkSettleMs: 180,
+        remarkSettleMs: 400,
+        remarkFillWaitMs: 6000,
         confirmClickMs: 450,
         typingMs: 90,
         typingAfterMs: 140,
@@ -315,8 +316,8 @@
         const input = getFriendApplyRemarkInput();
         if (input && talkList.length) {
             const msg = talkList[talkIndex % talkList.length];
-            if (!remarkValueMatches(readInputValue(input), msg)) {
-                await fillRemarkInput(input, msg);
+            if (!remarkValueMatches(readRemarkValue(input), msg)) {
+                await fillFriendApplyRemark(msg);
             }
         }
 
@@ -1487,36 +1488,54 @@
     }
 
     function getFriendApplyRemarkInput() {
-        return document.querySelector(
-            '.wk-friendapply-content-message textarea, .wk-friendapply-content-message input, ' +
-            '.wk-friendapply textarea, .wk-friendapply input, ' +
-            '.wk-friendapply .semi-input textarea, .wk-friendapply .semi-input input'
-        );
+        const selectors = [
+            '.wk-friendapply-content-message textarea',
+            '.wk-friendapply-content-message input[type="text"]',
+            '.wk-friendapply-content-message .semi-input textarea',
+            '.wk-friendapply-content-message .semi-input input',
+            '.wk-friendapply-content-message .semi-input-textarea textarea',
+            '.wk-friendapply-content-message div[contenteditable="true"]',
+            '.wk-friendapply textarea.semi-textarea',
+            '.wk-friendapply textarea',
+            '.wk-friendapply input[type="text"]',
+            '.wk-friendapply .semi-input-textarea textarea',
+            '.wk-friendapply .semi-input textarea',
+            '.wk-friendapply div[contenteditable="true"]',
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && isInputReady(el)) return el;
+        }
+        const scope = document.querySelector('.wk-friendapply, .wk-friendapply-content-message');
+        if (scope) {
+            for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
+                if (isOurUI(el) || !isInputReady(el)) continue;
+                const ph = (el.getAttribute('placeholder') || '').toLowerCase();
+                if (ph.includes('验证') || ph.includes('留言') || ph.includes('申请') || ph.includes('备注') || ph.includes('朋友')) {
+                    return el;
+                }
+            }
+            for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
+                if (!isOurUI(el) && isInputReady(el)) return el;
+            }
+        }
+        return null;
     }
 
-    function syncFriendApplyRemarkState(remark) {
-        const scopes = [
-            document.querySelector('.wk-friendapply-content-message'),
-            document.querySelector('.wk-friendapply'),
-            getFriendApplyRemarkInput(),
-        ].filter(Boolean);
+    async function waitFriendApplyRemarkInput(maxMs) {
+        const endAt = Date.now() + (maxMs || PACE.remarkFillWaitMs);
+        while (Date.now() < endAt) {
+            const input = getFriendApplyRemarkInput();
+            if (input && isInputReady(input)) return input;
+            await delay(PACE.pollFastMs);
+        }
+        return getFriendApplyRemarkInput();
+    }
 
-        const seen = new Set();
-        const tryOnChange = (el, depth = 0) => {
-            if (!el || depth > 18 || seen.has(el)) return;
-            seen.add(el);
-            const props = getReactProps(el);
-            if (props?.onChange) {
-                try { props.onChange(remark); } catch (e) { /* ignore */ }
-                try { props.onChange(remark, { target: el, currentTarget: el }); } catch (e) { /* ignore */ }
-            }
-            if (props?.onMessage) {
-                try { props.onMessage(remark); } catch (e) { /* ignore */ }
-            }
-            if (el.parentElement) tryOnChange(el.parentElement, depth + 1);
-            for (const child of el.children || []) tryOnChange(child, depth + 1);
-        };
-        scopes.forEach(scope => tryOnChange(scope));
+    function readRemarkValue(input) {
+        if (!input) return '';
+        if (input.tagName.toLowerCase() === 'div') return (input.textContent || input.innerText || '').trim();
+        return (input.value || '').trim();
     }
 
     function remarkValueMatches(current, expected) {
@@ -1525,18 +1544,93 @@
         return !!exp && (cur === exp || cur.includes(exp));
     }
 
-    async function fillFriendApplyRemark(remark) {
+    function syncFriendApplyRemarkState(remark) {
         const input = getFriendApplyRemarkInput();
-        if (!input) return false;
+        const scopes = [
+            document.querySelector('.wk-friendapply-content-message'),
+            document.querySelector('.wk-friendapply'),
+            input,
+        ].filter(Boolean);
+
+        const seen = new Set();
+        const tryProps = (el, depth = 0) => {
+            if (!el || depth > 20 || seen.has(el)) return;
+            seen.add(el);
+            const props = getReactProps(el);
+            if (props?.onChange) {
+                try { props.onChange(remark); } catch (e) { /* ignore */ }
+                try { props.onChange(remark, { target: { value: remark }, currentTarget: { value: remark } }); } catch (e) { /* ignore */ }
+            }
+            if (props?.onInput) {
+                try { props.onInput(remark); } catch (e) { /* ignore */ }
+                try { props.onInput({ target: { value: remark }, currentTarget: { value: remark } }); } catch (e) { /* ignore */ }
+            }
+            if (props?.onValueChange) {
+                try { props.onValueChange(remark); } catch (e) { /* ignore */ }
+            }
+            if (props?.onMessage) {
+                try { props.onMessage(remark); } catch (e) { /* ignore */ }
+            }
+            if (el.parentElement) tryProps(el.parentElement, depth + 1);
+            for (const child of el.children || []) tryProps(child, depth + 1);
+        };
+        scopes.forEach(scope => tryProps(scope));
+    }
+
+    async function typeIntoApplyRemark(input, remark) {
+        if (!input || !remark) return false;
+        const text = String(remark).trim();
         input.focus();
         await delay(PACE.typingMs);
-        setInputValue(input, '');
-        await delay(PACE.typingMs);
-        setInputValue(input, remark);
-        syncFriendApplyRemarkState(remark);
+
+        const tryFill = async () => {
+            setInputValue(input, text);
+            syncReactInputValue(input, text);
+            syncFriendApplyRemarkState(text);
+            await delay(PACE.remarkSettleMs);
+            const fresh = getFriendApplyRemarkInput() || input;
+            return remarkValueMatches(readRemarkValue(fresh), text);
+        };
+
+        if (await tryFill()) return true;
+
+        input.focus();
+        try {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, text);
+        } catch (e) { /* ignore */ }
+        input.dispatchEvent(new InputEvent('input', {
+            bubbles: true, cancelable: true, data: text, inputType: 'insertText',
+        }));
+        syncReactInputValue(input, text);
+        syncFriendApplyRemarkState(text);
         await delay(PACE.remarkSettleMs);
-        const fresh = getFriendApplyRemarkInput() || input;
-        return remarkValueMatches(readInputValue(fresh), remark);
+        if (remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text)) return true;
+
+        setInputValue(input, '');
+        await delay(60);
+        for (const ch of text) {
+            const next = readRemarkValue(input) + ch;
+            setInputValue(input, next);
+            input.dispatchEvent(new InputEvent('input', {
+                bubbles: true, cancelable: true, data: ch, inputType: 'insertText',
+            }));
+            syncReactInputValue(input, next);
+            await delay(35);
+        }
+        syncFriendApplyRemarkState(text);
+        await delay(PACE.remarkCheckMs);
+        return remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text);
+    }
+
+    async function fillFriendApplyRemark(remark) {
+        const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
+        if (!input) return false;
+        setStatus(`填写验证消息…`);
+        const ok = await typeIntoApplyRemark(input, remark);
+        if (ok) return true;
+        const finishBtn = findFinishButton();
+        return !!(finishBtn && isFinishButtonEnabled(finishBtn));
     }
 
     function findFinishButton() {
@@ -1707,14 +1801,8 @@
         }
         input.focus();
         await delay(PACE.typingMs);
-        setInputValue(input, msg);
-        await delay(PACE.remarkSettleMs);
-        if (!remarkValueMatches(readInputValue(input), msg)) {
-            setInputValue(input, msg);
-            syncReactInputValue(input, msg);
-            await delay(PACE.remarkCheckMs);
-        }
-        return remarkValueMatches(readInputValue(input), msg);
+        await typeIntoApplyRemark(input, msg);
+        return remarkValueMatches(readRemarkValue(input), msg);
     }
 
     async function checkRemarkFilled(input, expected) {
@@ -1831,7 +1919,14 @@
         if (talkList.length === 0) return 'retry';
 
         const msg = talkList[talkIndex++ % talkList.length];
-        const filled = await fillRemarkInput(remarkResult, msg);
+        setStatus(`填写验证消息: ${msg.length > 18 ? msg.slice(0, 18) + '…' : msg}`);
+        let filled = false;
+        if (isFriendApplyRouteOpen()) {
+            await delay(450);
+            filled = await fillFriendApplyRemark(msg);
+        } else {
+            filled = await fillRemarkInput(remarkResult, msg);
+        }
         if (!filled) {
             setStatus(`验证消息未填入，重试: ${phone}`);
             return 'retry';
