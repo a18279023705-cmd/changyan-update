@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.7
-// @description  畅言加好友阿陌专用，修复申请页验证消息话术未填入
+// @version      9.20.8
+// @description  畅言加好友阿陌专用，搜索只触发一次回车避免频繁点击
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -1106,25 +1106,17 @@
         return best;
     }
 
+    function setSearchInputValueQuiet(input, value) {
+        if (!input) return;
+        input.focus();
+        const tag = input.tagName.toLowerCase();
+        const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) setter.call(input, value);
+        else input.value = value;
+    }
+
     async function simulateEnterSearch(input, keyword) {
-        let el = input;
-        for (let i = 0; i < 14 && el; i++) {
-            const props = getReactProps(el);
-            if (props?.onEnterPress) {
-                props.onEnterPress();
-                await delay(320);
-                return true;
-            }
-            el = el.parentElement;
-        }
-
-        ['keydown', 'keypress', 'keyup'].forEach(type => {
-            input.dispatchEvent(new KeyboardEvent(type, {
-                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
-            }));
-        });
-        await delay(320);
-
         const friendAdd = findFriendAddInstance();
         if (friendAdd) {
             await new Promise(resolve => {
@@ -1136,20 +1128,44 @@
                     resolve();
                 }
             });
+            await delay(320);
             return true;
         }
+
+        let el = input;
+        for (let i = 0; i < 14 && el; i++) {
+            const props = getReactProps(el);
+            if (props?.onEnterPress) {
+                props.onEnterPress();
+                await delay(320);
+                return true;
+            }
+            el = el.parentElement;
+        }
+
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+        await delay(320);
         return false;
     }
 
     async function submitSearch(input, phone) {
-        setInputValue(input, phone);
-        await delay(PACE.typingMs);
         if (input.closest?.('.wk-friendadd') || getFriendAddSearchInput() === input) {
+            setSearchInputValueQuiet(input, phone);
+            await delay(PACE.typingMs);
             await simulateEnterSearch(input, phone);
             await delay(1200);
             return;
         }
-        await setInputValueAndEnter(input, phone);
+        input.focus();
+        await delay(PACE.typingMs);
+        setInputValue(input, phone);
+        await delay(PACE.typingMs);
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
+        }));
+        await delay(PACE.typingAfterMs);
     }
 
     async function humanClick(el) {
