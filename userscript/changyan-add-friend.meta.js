@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.3
-// @description  畅言加好友阿陌专用，修复提交未完成就处理下一号
+// @version      9.20.4
+// @description  畅言加好友阿陌专用，修复切页回来重复添加同一号
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
