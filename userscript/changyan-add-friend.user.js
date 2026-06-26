@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.15.11
-// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度
+// @version      9.16.0
+// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度（9.16 优化 DOM/轮询/缓存）
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,11 +15,9 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.15.11';
+    const SCRIPT_VERSION = '9.16.0';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
-    const RELEASE_BASE =
-        'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download';
     const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RAW_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RAW_BASE + '/changyan-add-friend.user.js';
@@ -85,6 +83,24 @@
     let cachedSearchInput = null;
     let visibleTextCache = { text: '', at: 0 };
     let progressBackupTimer = null;
+    let lastStatsKey = '';
+    let lastProgressKey = '';
+
+    const RATE_LIMIT_HINTS = [
+        '请不要频繁点击',
+        '1分钟后再试',
+        '请1分钟后再试',
+        '请一分钟后再试',
+    ];
+    const HINT_SELECTORS = [
+        '.semi-toast-content',
+        '.semi-notification-content',
+        '[class*="toast"]',
+        '[class*="Toast"]',
+        '.semi-modal-content',
+        '[class*="modal"]',
+        '[class*="Modal"]',
+    ];
 
     let panel = null;
     let elMiniBtn = null;
@@ -194,7 +210,13 @@
         return `成功 ${successCount} · 失败 ${failCount} · 跳过 ${skipCount} · 移后 ${deferCount}`;
     }
 
-    function updateStats() {
+    function updateStats(force = false) {
+        const key = `${successCount}|${failCount}|${skipCount}|${deferCount}|${phoneList.length}|${phoneIndex}`;
+        if (!force && key === lastStatsKey) {
+            updateMiniButton();
+            return;
+        }
+        lastStatsKey = key;
         if (elStats) {
             elStats.innerHTML = `
                 <span class="cy-chip cy-chip-ok"><span class="cy-chip-num">${successCount}</span><span class="cy-chip-label">成功</span></span>
@@ -254,12 +276,34 @@
         keepAliveActive = false;
     }
 
-    function getVisibleText() {
+    function invalidateVisibleTextCache() {
+        visibleTextCache = { text: '', at: 0 };
+    }
+
+    function getVisibleText(force = false) {
         const now = Date.now();
-        if (now - visibleTextCache.at < 100) return visibleTextCache.text;
+        const ttl = running ? 120 : 400;
+        if (!force && now - visibleTextCache.at < ttl) return visibleTextCache.text;
         const text = (document.body && document.body.innerText) || '';
         visibleTextCache = { text, at: now };
         return text;
+    }
+
+    /** 优先扫 toast/弹层，避免每次读整页 innerText */
+    function collectHintText() {
+        const chunks = [];
+        for (const sel of HINT_SELECTORS) {
+            document.querySelectorAll(sel).forEach(el => {
+                if (isOurUI(el)) return;
+                const t = (el.innerText || '').trim();
+                if (t) chunks.push(t);
+            });
+        }
+        return chunks.join('\n');
+    }
+
+    function textHasAny(text, hints) {
+        return hints.some(h => text.includes(h));
     }
 
     function parseVersionParts(version) {
@@ -341,16 +385,14 @@
     }
 
     function detectRateLimit() {
-        const text = getVisibleText();
-        return (
-            text.includes('请不要频繁点击') ||
-            text.includes('1分钟后再试') ||
-            text.includes('请1分钟后再试') ||
-            text.includes('请一分钟后再试')
-        );
+        const quick = collectHintText();
+        if (quick && textHasAny(quick, RATE_LIMIT_HINTS)) return true;
+        return textHasAny(getVisibleText(), RATE_LIMIT_HINTS);
     }
 
     function detectUserNotFound() {
+        const quick = collectHintText();
+        if (quick && quick.includes('用户不存在')) return true;
         return getVisibleText().includes('用户不存在');
     }
 
@@ -404,7 +446,7 @@
     async function forceRecoverStuck(phone) {
         setStatus(`检测到卡住，强制恢复继续: ${phone || '—'}`);
         cachedSearchInput = null;
-        visibleTextCache = { text: '', at: 0 };
+        invalidateVisibleTextCache();
         await dismissOverlaySafely();
         clearSearchInput();
         await delay(PACE.afterDeferMs);
@@ -587,6 +629,8 @@
         if (!phoneList.length) return;
         try {
             const state = JSON.stringify(progressStatePayload());
+            if (!flushBackup && state === lastProgressKey) return;
+            lastProgressKey = state;
             sessionStorage.setItem(PROGRESS_STORAGE_KEY, state);
             if (flushBackup) {
                 if (progressBackupTimer) {
@@ -654,6 +698,7 @@
                 clearTimeout(progressBackupTimer);
                 progressBackupTimer = null;
             }
+            lastProgressKey = '';
             sessionStorage.removeItem(PROGRESS_STORAGE_KEY);
             sessionStorage.removeItem(PHONE_LIST_STORAGE_KEY);
             localStorage.removeItem(`${progressBackupKey()}_state`);
@@ -772,40 +817,15 @@
         return await checkAfterAction(phone, waitFriendPanel && !findAddFriendButton());
     }
 
-    function waitForSelector(selector, retry = 40, interval = PACE.pollFastMs) {
-        return new Promise(resolve => {
-            let count = 0;
-            const timer = setInterval(() => {
-                const el = document.querySelector(selector);
-                if (el) {
-                    clearInterval(timer);
-                    resolve(el);
-                } else if (++count >= retry) {
-                    clearInterval(timer);
-                    resolve(null);
-                }
-            }, interval);
-        });
+    function waitForSelector(selector, maxMs = 40 * PACE.pollFastMs, interval = PACE.pollFastMs) {
+        return pollUntil(() => document.querySelector(selector), maxMs, interval);
     }
 
-    function waitForButton(keyword, role = 'button', retry = 60, interval = PACE.pollNormalMs, root = document) {
-        return new Promise(resolve => {
-            let count = 0;
-            const timer = setInterval(() => {
-                const btn = Array.from(root.querySelectorAll(`button, div[role="${role}"]`))
-                    .find(el => {
-                        if (isOurUI(el)) return false;
-                        return (el.innerText || '').includes(keyword);
-                    });
-                if (btn) {
-                    clearInterval(timer);
-                    resolve(btn);
-                } else if (++count >= retry) {
-                    clearInterval(timer);
-                    resolve(null);
-                }
-            }, interval);
-        });
+    function waitForButton(keyword, role = 'button', maxMs = 60 * PACE.pollNormalMs, interval = PACE.pollNormalMs, root = document) {
+        return pollUntil(() => {
+            return Array.from(root.querySelectorAll(`button, div[role="${role}"]`))
+                .find(el => !isOurUI(el) && (el.innerText || '').includes(keyword)) || null;
+        }, maxMs, interval);
     }
 
     function findExistingFriendPanel() {
@@ -1029,6 +1049,7 @@
         cachedSearchInput = input;
 
         await setInputValueAndEnter(input, phone);
+        invalidateVisibleTextCache();
 
         let outcome = await waitSearchOutcome(phone, true);
         if (outcome) return outcome;
@@ -1873,13 +1894,23 @@
         });
     }
 
+    function startPanelWatchdog() {
+        if (window.__cyPanelWatchdog) return;
+        window.__cyPanelWatchdog = true;
+        const ensurePanel = () => {
+            if (!document.getElementById('cy-add-friend-panel')) createPanel();
+            lockPanelPosition();
+            if (running && !keepAliveActive) startKeepAlive();
+        };
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') ensurePanel();
+        });
+        setInterval(ensurePanel, 8000);
+    }
+
     if (document.readyState !== 'loading') boot();
     else window.addEventListener('DOMContentLoaded', boot);
 
-    setInterval(() => {
-        if (!document.getElementById('cy-add-friend-panel')) createPanel();
-        lockPanelPosition();
-        if (running && !keepAliveActive) startKeepAlive();
-    }, 4000);
+    startPanelWatchdog();
 
 })();
