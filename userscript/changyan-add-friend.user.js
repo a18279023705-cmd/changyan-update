@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.1
-// @description  畅言加好友阿陌专用，修复频繁时同一号重复提交
+// @version      9.20.2
+// @description  畅言加好友阿陌专用，修复申请添加朋友页验证消息填入检测
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.1';
+    const SCRIPT_VERSION = '9.20.2';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -44,6 +44,7 @@
         afterRetryMs: 900,
         searchWaitMs: 520,
         actionWaitMs: 700,
+        friendApplyWaitMs: 4500,
         actionSettleMs: 360,
         confirmWaitMs: 580,
         confirmSettleMs: 320,
@@ -117,6 +118,8 @@
         '[class*="Modal"]',
         '[class*="notification"]',
     ];
+    /** 畅言点「添加好友」后进入的申请页（非弹窗） */
+    const FRIEND_APPLY_ROUTE_TITLES = ['申请添加朋友', '填写验证消息'];
 
     let panel = null;
     let elMiniBtn = null;
@@ -940,6 +943,33 @@
         await delay(PACE.typingAfterMs);
     }
 
+    function getReactFiber(el) {
+        if (!el) return null;
+        for (const key of Object.keys(el)) {
+            if (key.startsWith('__reactFiber$') || key.startsWith('__reactInternalInstance$')) {
+                return el[key];
+            }
+        }
+        return null;
+    }
+
+    function getReactProps(el) {
+        const fiber = getReactFiber(el);
+        return fiber?.memoizedProps || fiber?.pendingProps || null;
+    }
+
+    function syncReactInputValue(input, value) {
+        let el = input;
+        for (let i = 0; i < 12 && el; i++) {
+            const props = getReactProps(el);
+            if (props?.onChange) {
+                try { props.onChange(value); } catch (e) { /* ignore */ }
+                try { props.onChange(value, { target: input, currentTarget: input }); } catch (e) { /* ignore */ }
+            }
+            el = el.parentElement;
+        }
+    }
+
     function setInputValue(input, value) {
         input.focus();
         if (input.tagName.toLowerCase() === 'div') {
@@ -947,12 +977,22 @@
             document.execCommand('delete');
             input.textContent = value;
             input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+            syncReactInputValue(input, value);
             return;
         }
-        const nativeSetter = Object.getOwnPropertyDescriptor(input.__proto__, 'value').set;
-        nativeSetter.call(input, '');
-        nativeSetter.call(input, value);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        const tag = input.tagName.toLowerCase();
+        const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) setter.call(input, value);
+        else input.value = value;
+        input.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            data: value,
+            inputType: 'insertFromPaste',
+        }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        syncReactInputValue(input, value);
     }
 
     function findAddFriendButton(root = document) {
@@ -1105,7 +1145,130 @@
         return await handleAlreadyFriend(phone, waitFriendPanel);
     }
 
+    function getActiveRouteTitle() {
+        const titles = document.querySelectorAll('.wk-viewqueueheader-content-title');
+        for (let i = titles.length - 1; i >= 0; i--) {
+            const t = (titles[i].textContent || '').trim();
+            if (t) return t;
+        }
+        return '';
+    }
+
+    function isFriendApplyRouteOpen() {
+        if (document.querySelector('.wk-friendapply')) return true;
+        const title = getActiveRouteTitle();
+        return FRIEND_APPLY_ROUTE_TITLES.some(t => title.includes(t));
+    }
+
+    function getFriendApplyRemarkInput() {
+        return document.querySelector(
+            '.wk-friendapply-content-message textarea, .wk-friendapply-content-message input, ' +
+            '.wk-friendapply textarea, .wk-friendapply input, ' +
+            '.wk-friendapply .semi-input textarea, .wk-friendapply .semi-input input'
+        );
+    }
+
+    function syncFriendApplyRemarkState(remark) {
+        const scopes = [
+            document.querySelector('.wk-friendapply-content-message'),
+            document.querySelector('.wk-friendapply'),
+            getFriendApplyRemarkInput(),
+        ].filter(Boolean);
+
+        const seen = new Set();
+        const tryOnChange = (el, depth = 0) => {
+            if (!el || depth > 18 || seen.has(el)) return;
+            seen.add(el);
+            const props = getReactProps(el);
+            if (props?.onChange) {
+                try { props.onChange(remark); } catch (e) { /* ignore */ }
+                try { props.onChange(remark, { target: el, currentTarget: el }); } catch (e) { /* ignore */ }
+            }
+            if (props?.onMessage) {
+                try { props.onMessage(remark); } catch (e) { /* ignore */ }
+            }
+            if (el.parentElement) tryOnChange(el.parentElement, depth + 1);
+            for (const child of el.children || []) tryOnChange(child, depth + 1);
+        };
+        scopes.forEach(scope => tryOnChange(scope));
+    }
+
+    function remarkValueMatches(current, expected) {
+        const cur = (current || '').trim();
+        const exp = (expected || '').trim();
+        return !!exp && (cur === exp || cur.includes(exp));
+    }
+
+    async function fillFriendApplyRemark(remark) {
+        const input = getFriendApplyRemarkInput();
+        if (!input) return false;
+        input.focus();
+        await delay(PACE.typingMs);
+        setInputValue(input, '');
+        await delay(PACE.typingMs);
+        setInputValue(input, remark);
+        syncFriendApplyRemarkState(remark);
+        await delay(PACE.remarkSettleMs);
+        const fresh = getFriendApplyRemarkInput() || input;
+        return remarkValueMatches(readInputValue(fresh), remark);
+    }
+
+    function findFinishButton() {
+        if (document.querySelector('.wk-friendapply')) {
+            const headers = document.querySelectorAll('.wk-viewqueueheader');
+            for (let i = headers.length - 1; i >= 0; i--) {
+                const btn = headers[i].querySelector(
+                    '.wk-viewqueueheader-content-action button, .wk-viewqueueheader-content-action .semi-button'
+                );
+                if (btn && !isOurUI(btn)) return btn;
+            }
+        }
+        const headers = document.querySelectorAll('.wk-viewqueueheader');
+        for (const header of headers) {
+            const title = header.querySelector('.wk-viewqueueheader-content-title')?.textContent?.trim() || '';
+            if (!FRIEND_APPLY_ROUTE_TITLES.some(t => title.includes(t))) continue;
+            const btn = header.querySelector(
+                '.wk-viewqueueheader-content-action button, .wk-viewqueueheader-content-action .semi-button'
+            );
+            if (!btn || isOurUI(btn)) continue;
+            const text = (btn.textContent || '').replace(/\s+/g, '').trim();
+            if (text === '完成') return btn;
+        }
+        return Array.from(document.querySelectorAll('button, .semi-button, [role="button"]'))
+            .find(el => !isOurUI(el) && (el.textContent || '').replace(/\s+/g, '').trim() === '完成') || null;
+    }
+
+    function isFinishButtonEnabled(btn) {
+        if (!btn) return false;
+        if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+        if (btn.classList.contains('semi-button-disabled')) return false;
+        return true;
+    }
+
+    async function clickFinishButton(maxWait) {
+        const endAt = Date.now() + (maxWait || PACE.confirmWaitMs + 2000);
+        while (Date.now() < endAt) {
+            const btn = findFinishButton();
+            if (btn && isFinishButtonEnabled(btn)) {
+                const props = getReactProps(btn);
+                try {
+                    if (props?.onClick) props.onClick({});
+                    else btn.click();
+                } catch (e) {
+                    btn.click();
+                }
+                await delay(PACE.confirmClickMs);
+                return true;
+            }
+            await delay(PACE.pollFastMs);
+        }
+        return false;
+    }
+
     function findRemarkInputSync() {
+        const friendApplyInput = getFriendApplyRemarkInput();
+        if (friendApplyInput && isInputReady(friendApplyInput)) return friendApplyInput;
+
         const container = document.querySelector('.semi-modal-content, .modal-content, .popup-content') || document.body;
         const textarea = container.querySelector('textarea.semi-textarea, textarea');
         if (textarea) return textarea;
@@ -1113,7 +1276,7 @@
         const inputs = container.querySelectorAll('input[type="text"]');
         for (const inp of inputs) {
             const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
-            if (ph.includes('备注') || ph.includes('留言')) return inp;
+            if (ph.includes('备注') || ph.includes('留言') || ph.includes('验证')) return inp;
         }
 
         return container.querySelector('div[contenteditable="true"]') || null;
@@ -1128,12 +1291,16 @@
 
     async function waitForRemarkInput(phone) {
         await delay(PACE.actionSettleMs);
-        const endAt = Date.now() + PACE.actionWaitMs;
+        const endAt = Date.now() + Math.max(PACE.actionWaitMs, PACE.friendApplyWaitMs);
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound();
             if (blocked) return blocked;
             if (findExistingFriendPanel()) {
                 return await handleAlreadyFriend(phone, false);
+            }
+            if (isFriendApplyRouteOpen()) {
+                const applyInput = getFriendApplyRemarkInput();
+                if (applyInput && isInputReady(applyInput)) return applyInput;
             }
             const input = findRemarkInputSync();
             if (input && isInputReady(input)) return input;
@@ -1143,29 +1310,37 @@
     }
 
     async function fillRemarkInput(input, msg) {
+        if (isFriendApplyRouteOpen() || input?.closest?.('.wk-friendapply')) {
+            return fillFriendApplyRemark(msg);
+        }
         input.focus();
         await delay(PACE.typingMs);
         setInputValue(input, msg);
         await delay(PACE.remarkSettleMs);
-        if (readInputValue(input) !== msg) {
+        if (!remarkValueMatches(readInputValue(input), msg)) {
             setInputValue(input, msg);
+            syncReactInputValue(input, msg);
             await delay(PACE.remarkCheckMs);
         }
+        return remarkValueMatches(readInputValue(input), msg);
     }
 
-    async function waitConfirmSettled() {
+    async function waitSubmitSettled() {
         await delay(PACE.confirmSettleMs);
         const endAt = Date.now() + PACE.confirmWaitMs;
         while (Date.now() < endAt) {
-            if (!isAddFriendModalOpen() || detectRateLimit() || detectUserNotFound()) break;
+            if (!isAddFriendModalOpen() && !isFriendApplyRouteOpen()) break;
+            if (detectRateLimit() || detectUserNotFound()) break;
             await delay(PACE.pollFastMs);
         }
     }
 
     async function checkRemarkFilled(input, expected) {
-        if (readInputValue(input) === expected) return true;
+        const fresh = getFriendApplyRemarkInput() || input;
+        if (remarkValueMatches(readInputValue(fresh), expected)) return true;
         await delay(PACE.remarkCheckMs);
-        return readInputValue(input) === expected;
+        const again = getFriendApplyRemarkInput() || input;
+        return remarkValueMatches(readInputValue(again), expected);
     }
 
     async function clickConfirmComplete() {
@@ -1233,18 +1408,29 @@
         if (!remarkResult) {
             outcome = await checkAfterAction(phone, true);
             if (outcome) return outcome;
+            setStatus(`未进入验证消息页，重试: ${phone}`);
             return 'retry';
         }
         if (talkList.length === 0) return 'retry';
 
         const msg = talkList[talkIndex++ % talkList.length];
-        await fillRemarkInput(remarkResult, msg);
+        const filled = await fillRemarkInput(remarkResult, msg);
+        if (!filled) {
+            setStatus(`验证消息未填入，重试: ${phone}`);
+            return 'retry';
+        }
 
-        const ok = await checkRemarkFilled(remarkResult, msg);
-        if (!ok) return 'retry';
-
-        await clickConfirmComplete();
-        await waitConfirmSettled();
+        let confirmed = false;
+        if (isFriendApplyRouteOpen()) {
+            confirmed = await clickFinishButton(PACE.friendApplyWaitMs);
+        } else {
+            confirmed = await clickConfirmComplete();
+        }
+        if (!confirmed) {
+            setStatus(`未找到「完成」按钮，重试: ${phone}`);
+            return 'retry';
+        }
+        await waitSubmitSettled();
 
         outcome = checkRateLimitOrNotFound();
         if (outcome) return outcome;
