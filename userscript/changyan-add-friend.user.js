@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.17.1
-// @description  畅言加好友阿陌专用，频繁必等+面板倒计时，移后补扫，暂停保存进度
+// @version      9.18.0
+// @description  畅言加好友阿陌专用，频繁统一倒计时等待，移后补扫，暂停保存进度
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.17.1';
+    const SCRIPT_VERSION = '9.18.0';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
@@ -119,10 +119,6 @@
     let elMiniBtn = null;
     let elTalk = null;
     let elStatus = null;
-    let elCountdown = null;
-    let elCountdownSec = null;
-    let elCountdownHint = null;
-    let elCountdownPhone = null;
     let countdownActive = false;
     let countdownLeftSec = 0;
     let elProgress = null;
@@ -196,11 +192,20 @@
         return !!(el && el.closest && el.closest('#cy-add-friend-panel, #cy-mini-btn'));
     }
 
+    function escapeHtml(text) {
+        return String(text || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
     function setStatus(text) {
+        if (countdownActive) return;
         if (elStatus) {
+            elStatus.classList.remove('cy-waiting', 'cy-countdown-mode', 'cy-busy');
             elStatus.textContent = text;
-            if (/随机等待|频繁|冷却/.test(text)) elStatus.classList.add('cy-waiting');
-            else elStatus.classList.remove('cy-waiting');
+            if (/处理:|等待|频繁|冷却|恢复|暂停/.test(text)) elStatus.classList.add('cy-busy');
         }
         updateMiniButton();
         console.log('[畅言加好友·阿陌] ' + text);
@@ -252,9 +257,10 @@
         if (!elMiniBtn) return;
         if (countdownActive && countdownLeftSec > 0) {
             elMiniBtn.innerHTML = `<span class="cy-mini-main">${countdownLeftSec}s</span><span class="cy-mini-sub">等待</span>`;
-            elMiniBtn.classList.add('cy-running');
+            elMiniBtn.classList.add('cy-running', 'cy-waiting');
             return;
         }
+        elMiniBtn.classList.remove('cy-waiting');
         if (running) {
             elMiniBtn.innerHTML = `<span class="cy-mini-main">畅言</span><span class="cy-mini-sub">${successCount}/${phoneList.length || 0}</span>`;
             elMiniBtn.classList.add('cy-running');
@@ -403,8 +409,8 @@
     function lockPanelPosition() {
         if (!panel) return;
         panel.style.position = 'fixed';
-        panel.style.top = '0';
-        panel.style.right = '0';
+        panel.style.top = '12px';
+        panel.style.right = '12px';
         panel.style.left = 'auto';
         panel.style.bottom = 'auto';
         panel.style.margin = '0';
@@ -441,21 +447,27 @@
     function showCountdown(hint, leftSec, phone) {
         countdownActive = true;
         countdownLeftSec = Math.max(0, leftSec);
-        if (elCountdown) elCountdown.classList.add('cy-visible');
-        if (elCountdownHint) elCountdownHint.textContent = hint || '等待中';
-        if (elCountdownSec) elCountdownSec.textContent = String(countdownLeftSec);
-        if (elCountdownPhone) elCountdownPhone.textContent = phone ? `当前: ${phone}` : '';
+        if (elStatus) {
+            elStatus.classList.add('cy-waiting', 'cy-countdown-mode');
+            elStatus.innerHTML =
+                `<div class="cy-status-count-label">${escapeHtml(hint)}</div>` +
+                `<div class="cy-status-count-sec">${countdownLeftSec}<span class="cy-status-count-unit">秒</span></div>` +
+                (phone ? `<div class="cy-status-count-sub">${escapeHtml(phone)}</div>` : '');
+        }
         updateMiniButton();
     }
 
     function hideCountdown() {
         countdownActive = false;
         countdownLeftSec = 0;
-        if (elCountdown) elCountdown.classList.remove('cy-visible');
+        if (elStatus) {
+            elStatus.classList.remove('cy-countdown-mode');
+            elStatus.innerHTML = '';
+        }
         updateMiniButton();
     }
 
-    /** 统一倒计时：每秒刷新面板大数字 + 状态栏 + 最小化按钮 */
+    /** 统一倒计时（仅状态区一处显示） */
     async function runCountdownWait({
         label,
         totalSec,
@@ -482,13 +494,31 @@
             const displaySec = stillLimited && leftSec <= 0 ? hardLeftSec : leftSec;
             const hint = stillLimited && leftSec <= 0 ? '等待频繁提示消失' : label;
             showCountdown(hint, displaySec, phone);
-            setStatus(
-                `${label} · 倒计时 ${displaySec}s · ${phone}` +
-                (stillLimited ? ' · 提示未消失' : '')
-            );
             await delay(1000);
         }
         hideCountdown();
+    }
+
+    /** 频繁等待：短缓冲与长冷却合并为一次倒计时 */
+    async function handleRateLimitWait(phone) {
+        const useLongCooldown = shouldTriggerCooldown();
+        invalidateVisibleTextCache();
+        await dismissOverlaySafely();
+        clearSearchInput();
+
+        const totalSec = useLongCooldown
+            ? Math.max(1, Math.round(cooldownDelayMs() / 1000))
+            : rateLimitWaitSec();
+
+        await runCountdownWait({
+            label: useLongCooldown ? '频繁过多 · 长冷却' : '频繁限制 · 等待中',
+            totalSec,
+            phone,
+            alsoWaitClear: !useLongCooldown,
+            hardMaxSec: useLongCooldown ? 0 : PACE.rateLimitClearMaxSec,
+        });
+
+        if (useLongCooldown) resetFrequentTracking();
     }
 
     function rateLimitWaitSec() {
@@ -499,20 +529,6 @@
             120
         );
         return base + extra;
-    }
-
-    /** 单次频繁：至少等待 N 秒，且 toast 消失后再继续 */
-    async function waitUntilRateLimitClears(phone) {
-        invalidateVisibleTextCache();
-        await dismissOverlaySafely();
-        clearSearchInput();
-        await runCountdownWait({
-            label: '频繁限制',
-            totalSec: rateLimitWaitSec(),
-            phone,
-            alsoWaitClear: true,
-            hardMaxSec: PACE.rateLimitClearMaxSec,
-        });
     }
 
     /** 稳定跑够本轮随机目标后，频繁过多才触发长冷却 */
@@ -536,17 +552,6 @@
         const jitter = PACE.cooldownJitterSec;
         const sec = PACE.cooldownCenterSec + (Math.random() * 2 - 1) * jitter;
         return Math.round(Math.max(50, sec) * 1000);
-    }
-
-    async function waitRateLimitCooldown(phone) {
-        await dismissOverlaySafely();
-        const totalSec = Math.max(1, Math.round(cooldownDelayMs() / 1000));
-        await runCountdownWait({
-            label: '频繁过多 · 长冷却',
-            totalSec,
-            phone,
-        });
-        resetFrequentTracking();
     }
 
     async function forceRecoverStuck(phone) {
@@ -1258,11 +1263,7 @@
             if (detectRateLimit(true)) {
                 consecutiveRateLimitHits++;
                 frequentHitCount++;
-                setStatus(`检测到频繁提示，先等待再继续: ${phone}`);
-                await waitUntilRateLimitClears(phone);
-                if (shouldTriggerCooldown()) {
-                    await waitRateLimitCooldown(phone);
-                }
+                await handleRateLimitWait(phone);
                 saveProgress(true);
                 continue;
             }
@@ -1318,34 +1319,25 @@
                 consecutiveRateLimitHits++;
                 frequentHitCount++;
                 invalidateVisibleTextCache();
-                await waitUntilRateLimitClears(phone);
 
-                if (phoneList.length <= 1) {
-                    if (shouldTriggerCooldown()) {
-                        await waitRateLimitCooldown(phone);
-                    } else {
-                        setStatus(`频繁: ${phone}，已缓冲后继续`);
-                        await delay(PACE.afterDeferMs);
-                    }
-                } else {
-                    const { phone: deferred, isNewDefer } = deferCurrentPhoneToEnd();
+                let waitPhone = phone;
+                if (phoneList.length > 1) {
+                    const { phone: deferred } = deferCurrentPhoneToEnd();
                     listReordered = true;
                     rateLimitRoundCount++;
+                    waitPhone = deferred;
+                }
 
-                    if (shouldTriggerCooldown()) {
-                        setStatus(`稳定 ${successSinceCooldown}/${stableSuccessTarget} 个后频繁过多，冷却后继续: ${deferred}`);
-                        await waitRateLimitCooldown(deferred);
-                        consecutiveRateLimitHits = 0;
-                    } else {
-                        const nextPhone = phoneList[phoneIndex] || '';
-                        if (isNewDefer) {
-                            setStatus(`频繁: ${deferred} 已移到最后 → ${nextPhone}`);
-                        } else {
-                            setStatus(`频繁: ${deferred} 已在移后列表 → ${nextPhone}`);
-                        }
-                        updateStats();
-                        await delay(PACE.afterDeferMs);
-                    }
+                await handleRateLimitWait(waitPhone);
+
+                if (phoneList.length > 1) {
+                    const nextPhone = phoneList[phoneIndex] || '—';
+                    setStatus(`已移后 ${waitPhone} → 继续 ${nextPhone}`);
+                    updateStats();
+                    await delay(PACE.afterDeferMs);
+                } else {
+                    setStatus(`频繁缓冲结束，重试 ${waitPhone}`);
+                    await delay(PACE.afterDeferMs);
                 }
             } else {
                 setStatus(`未完成添加，重试当前号: ${phone}`);
@@ -1712,69 +1704,67 @@
         const style = document.createElement('style');
         style.textContent = `
             #cy-add-friend-panel {
-                position: fixed; top: 0; right: 0; z-index: 99999;
-                width: 360px; background: #f1f5f9; border-radius: 0 0 0 14px;
-                box-shadow: 0 16px 40px rgba(15,23,42,0.12), 0 0 0 1px rgba(15,23,42,0.05);
+                position: fixed; top: 12px; right: 12px; z-index: 99999;
+                width: 372px; background: #ffffff;
+                border-radius: 18px; overflow: hidden;
+                box-shadow: 0 20px 50px rgba(15,23,42,0.16), 0 0 0 1px rgba(148,163,184,0.18);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
-                font-size: 13px; color: #0f172a; overflow: hidden;
-                margin: 0;
+                font-size: 13px; color: #0f172a;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
                 display: flex; align-items: center; justify-content: space-between;
-                padding: 12px 14px; background: linear-gradient(145deg,#0284c7 0%,#0ea5e9 55%,#38bdf8 100%);
+                padding: 14px 16px;
+                background: linear-gradient(135deg, #0c4a6e 0%, #0369a1 45%, #0ea5e9 100%);
                 color: #fff; user-select: none;
-                border-bottom: 1px solid rgba(255,255,255,0.12);
             }
             #cy-add-friend-panel .cy-head-title {
-                font-weight: 700; font-size: 16px; line-height: 1.2; letter-spacing: 0.02em;
+                font-weight: 800; font-size: 17px; line-height: 1.2; letter-spacing: 0.01em;
             }
             #cy-add-friend-panel .cy-head-sub {
-                font-size: 11px; opacity: 0.95; margin-top: 4px; color: rgba(255,255,255,0.88);
+                font-size: 11px; margin-top: 4px; color: rgba(255,255,255,0.82);
             }
             #cy-add-friend-panel .cy-head-btn {
-                background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.22);
-                color: #fff; width: 30px; height: 30px; border-radius: 10px; cursor: pointer;
+                background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2);
+                color: #fff; width: 32px; height: 32px; border-radius: 10px; cursor: pointer;
                 line-height: 1; font-size: 18px; flex-shrink: 0;
+                transition: background .15s ease;
             }
-            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.28); }
-            #cy-add-friend-panel .cy-body { padding: 12px 12px 14px; }
-            #cy-add-friend-panel .cy-inner-frame {
-                border: 2px solid #7dd3fc; border-radius: 14px;
+            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.24); }
+            #cy-add-friend-panel .cy-body {
+                padding: 14px; display: flex; flex-direction: column; gap: 12px;
                 background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
-                padding: 12px; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.85);
             }
             #cy-add-friend-panel .cy-card {
-                background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-                padding: 12px 14px; margin-bottom: 10px;
-                box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+                background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+                padding: 14px; box-shadow: 0 1px 3px rgba(15,23,42,0.05);
             }
             #cy-add-friend-panel .cy-progress-head {
                 display: flex; align-items: baseline; justify-content: space-between;
-                gap: 8px; margin-bottom: 10px;
+                gap: 8px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-progress-label {
-                font-size: 12px; font-weight: 600; color: #64748b;
+                font-size: 12px; font-weight: 600; color: #64748b; letter-spacing: 0.04em;
             }
             #cy-add-friend-panel .cy-progress {
-                font-size: 15px; color: #0f172a; font-weight: 800; font-variant-numeric: tabular-nums;
+                font-size: 16px; color: #0f172a; font-weight: 800; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-stats {
-                display: flex; gap: 5px; margin-bottom: 10px;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px;
             }
             #cy-add-friend-panel .cy-chip {
-                flex: 1; display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 2px; padding: 7px 2px; border-radius: 10px;
-                border: 1px solid transparent; min-height: 48px; min-width: 0;
+                display: flex; flex-direction: column; align-items: center;
+                justify-content: center; gap: 3px; padding: 8px 4px; border-radius: 12px;
+                border: 1px solid transparent; min-height: 52px; min-width: 0;
             }
             #cy-add-friend-panel .cy-chip-num {
-                font-size: 16px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+                font-size: 17px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-chip-label {
-                font-size: 10px; font-weight: 600; opacity: 0.85;
+                font-size: 10px; font-weight: 600; opacity: 0.88;
             }
             #cy-add-friend-panel .cy-chip-ok {
-                background: #ecfdf5; border-color: #a7f3d0; color: #047857;
+                background: #ecfdf5; border-color: #bbf7d0; color: #047857;
             }
             #cy-add-friend-panel .cy-chip-fail {
                 background: #fef2f2; border-color: #fecaca; color: #b91c1c;
@@ -1786,112 +1776,104 @@
                 background: #fffbeb; border-color: #fde68a; color: #b45309;
             }
             #cy-add-friend-panel .cy-progress-track {
-                height: 8px; background: #e2e8f0; border-radius: 99px; overflow: hidden;
+                height: 7px; background: #e2e8f0; border-radius: 99px; overflow: hidden;
             }
             #cy-add-friend-panel .cy-progress-bar {
                 height: 100%; width: 0%; border-radius: 99px;
-                background: linear-gradient(90deg,#7dd3fc,#0ea5e9);
-                box-shadow: 0 0 8px rgba(14,165,233,0.4);
-                transition: width .4s ease;
-            }
-            #cy-add-friend-panel .cy-split-row {
-                display: block; margin-bottom: 10px;
+                background: linear-gradient(90deg, #38bdf8, #0284c7);
+                transition: width .35s ease;
             }
             #cy-add-friend-panel .cy-field-card {
-                background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
-                padding: 8px 9px; box-shadow: 0 1px 2px rgba(15,23,42,0.04);
-                box-sizing: border-box; min-width: 0; overflow: hidden;
+                background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+                padding: 12px; box-shadow: 0 1px 3px rgba(15,23,42,0.04);
+                box-sizing: border-box; min-width: 0;
             }
-            #cy-add-friend-panel .cy-talk-col { min-width: 0; }
             #cy-add-friend-panel .cy-label {
-                display: block; margin-bottom: 6px; color: #334155;
-                font-size: 11px; font-weight: 700; line-height: 1.2;
+                display: block; margin-bottom: 8px; color: #475569;
+                font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
             }
             #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 88px; resize: vertical;
-                border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 9px;
-                font-size: 12px; line-height: 1.45; font-family: inherit;
+                width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical;
+                border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 11px;
+                font-size: 12px; line-height: 1.5; font-family: inherit;
                 background: #f8fafc; color: #0f172a;
+                transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
             }
             #cy-add-friend-panel textarea:focus {
                 outline: none; border-color: #38bdf8; background: #fff;
-                box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
+                box-shadow: 0 0 0 3px rgba(56,189,248,0.18);
             }
-            #cy-add-friend-panel .cy-btns-wrap {
-                display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px;
-            }
+            #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 8px; }
             #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
             #cy-add-friend-panel button.cy-btn {
                 flex: 1; min-width: 0; padding: 11px 10px; border: none;
-                border-radius: 10px; cursor: pointer; color: #fff; font-size: 13px;
+                border-radius: 11px; cursor: pointer; color: #fff; font-size: 13px;
                 font-weight: 700; font-family: inherit;
-                box-shadow: 0 2px 6px rgba(15,23,42,0.12);
+                box-shadow: 0 2px 8px rgba(15,23,42,0.1);
                 transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
             }
             #cy-add-friend-panel button.cy-btn:hover:not(:disabled) {
-                filter: brightness(1.05); transform: translateY(-1px);
-                box-shadow: 0 4px 10px rgba(15,23,42,0.14);
+                filter: brightness(1.04); transform: translateY(-1px);
             }
             #cy-add-friend-panel button.cy-btn:active:not(:disabled) { transform: translateY(0); }
             #cy-add-friend-panel button.cy-btn:disabled:not(.cy-btn-stop) {
-                opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none;
+                opacity: 0.48; cursor: not-allowed; transform: none; box-shadow: none;
             }
-            #cy-add-friend-panel .cy-btn-import {
-                background: linear-gradient(180deg,#38bdf8,#0ea5e9);
-            }
-            #cy-add-friend-panel .cy-btn-clear {
-                background: linear-gradient(180deg,#64748b,#475569);
-            }
-            #cy-add-friend-panel .cy-btn-start {
-                background: linear-gradient(180deg,#22c55e,#16a34a);
-            }
+            #cy-add-friend-panel .cy-btn-import { background: linear-gradient(180deg,#38bdf8,#0284c7); }
+            #cy-add-friend-panel .cy-btn-clear { background: linear-gradient(180deg,#64748b,#475569); }
+            #cy-add-friend-panel .cy-btn-start { background: linear-gradient(180deg,#22c55e,#15803d); }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop {
-                background: linear-gradient(180deg,#ef4444,#dc2626) !important; color: #fff !important;
+                background: linear-gradient(180deg,#f87171,#dc2626) !important;
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop:disabled {
-                background: linear-gradient(180deg,#ef4444,#dc2626) !important;
-                color: rgba(255,255,255,0.75) !important;
-                opacity: 0.55 !important; cursor: not-allowed !important;
-                box-shadow: none !important; transform: none !important;
+                opacity: 0.5 !important; cursor: not-allowed !important;
+                transform: none !important; box-shadow: none !important;
             }
             #cy-add-friend-panel .cy-status {
-                padding: 14px 14px; background: #fff; border: 2px solid #bae6fd;
-                border-radius: 12px; font-size: 14px; color: #334155;
-                min-height: 72px; word-break: break-all; line-height: 1.65;
-                font-weight: 500; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+                padding: 14px 16px; background: #fff; border: 1px solid #e2e8f0;
+                border-radius: 14px; font-size: 13px; color: #334155;
+                min-height: 64px; word-break: break-all; line-height: 1.6;
+                font-weight: 500; box-shadow: 0 1px 3px rgba(15,23,42,0.04);
             }
-            #cy-add-friend-panel .cy-status.cy-waiting {
-                color: #0369a1; font-weight: 700; background: #f0f9ff;
+            #cy-add-friend-panel .cy-status.cy-busy {
+                border-color: #bae6fd; background: #f0f9ff; color: #0369a1;
             }
-            #cy-add-friend-panel .cy-countdown {
-                display: none; margin-bottom: 10px; padding: 12px 14px;
-                border-radius: 12px; border: 2px solid #f59e0b;
-                background: linear-gradient(180deg, #fffbeb, #fef3c7);
-                text-align: center; box-shadow: 0 4px 14px rgba(245,158,11,0.18);
+            #cy-add-friend-panel .cy-status.cy-countdown-mode {
+                text-align: center; border-color: #fcd34d;
+                background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
+                color: #92400e; min-height: 108px;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
             }
-            #cy-add-friend-panel .cy-countdown.cy-visible { display: block; }
-            #cy-add-friend-panel .cy-countdown-hint {
-                font-size: 13px; font-weight: 700; color: #b45309; margin-bottom: 4px;
+            #cy-add-friend-panel .cy-status-count-label {
+                font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 6px;
             }
-            #cy-add-friend-panel .cy-countdown-sec {
-                font-size: 42px; font-weight: 800; line-height: 1.1;
+            #cy-add-friend-panel .cy-status-count-sec {
+                font-size: 44px; font-weight: 800; line-height: 1;
                 color: #d97706; font-variant-numeric: tabular-nums;
             }
-            #cy-add-friend-panel .cy-countdown-phone {
-                margin-top: 6px; font-size: 12px; color: #92400e; word-break: break-all;
+            #cy-add-friend-panel .cy-status-count-unit {
+                font-size: 16px; font-weight: 700; margin-left: 4px; color: #b45309;
+            }
+            #cy-add-friend-panel .cy-status-count-sub {
+                margin-top: 8px; font-size: 12px; color: #92400e; opacity: 0.92;
+                max-width: 100%; overflow: hidden; text-overflow: ellipsis;
             }
             #cy-mini-btn {
-                position: fixed; left: 8px; bottom: 68px; z-index: 9999;
-                width: 44px; height: 44px; border-radius: 50%; border: none;
-                background: linear-gradient(145deg, #38bdf8, #0ea5e9);
+                position: fixed; left: 12px; bottom: 72px; z-index: 9999;
+                width: 48px; height: 48px; border-radius: 50%; border: none;
+                background: linear-gradient(145deg, #0284c7, #0ea5e9);
                 color: #fff; cursor: pointer;
-                box-shadow: 0 5px 16px rgba(14,165,233,0.4);
+                box-shadow: 0 8px 20px rgba(14,165,233,0.35);
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
             }
             #cy-mini-btn.cy-visible { display: flex; }
             #cy-mini-btn.cy-running {
-                box-shadow: 0 0 0 4px rgba(56,189,248,0.28), 0 5px 16px rgba(14,165,233,0.4);
+                box-shadow: 0 0 0 4px rgba(56,189,248,0.22), 0 8px 20px rgba(14,165,233,0.35);
+            }
+            #cy-mini-btn.cy-waiting {
+                background: linear-gradient(145deg, #d97706, #f59e0b);
+                box-shadow: 0 0 0 4px rgba(245,158,11,0.22), 0 8px 20px rgba(245,158,11,0.28);
             }
             #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 800; }
             #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.95; }
@@ -1939,11 +1921,8 @@
 
         progressCard.append(progressHead, elStats, progressTrack);
 
-        const splitRow = document.createElement('div');
-        splitRow.className = 'cy-split-row';
-
         const talkCol = document.createElement('div');
-        talkCol.className = 'cy-talk-col cy-field-card';
+        talkCol.className = 'cy-field-card';
         const talkLabel = document.createElement('label');
         talkLabel.className = 'cy-label';
         talkLabel.textContent = '话术（每行一条）';
@@ -1952,7 +1931,6 @@
         elTalk.value = loadTalks();
         elTalk.addEventListener('blur', saveTalks);
         talkCol.append(talkLabel, elTalk);
-        splitRow.append(talkCol);
 
         const btnsWrap = document.createElement('div');
         btnsWrap.className = 'cy-btns-wrap';
@@ -1982,22 +1960,7 @@
         elStatus.className = 'cy-status';
         elStatus.textContent = '请先导入号码并填写话术';
 
-        elCountdown = document.createElement('div');
-        elCountdown.className = 'cy-countdown';
-        elCountdownHint = document.createElement('div');
-        elCountdownHint.className = 'cy-countdown-hint';
-        elCountdownHint.textContent = '频繁限制';
-        elCountdownSec = document.createElement('div');
-        elCountdownSec.className = 'cy-countdown-sec';
-        elCountdownSec.textContent = '0';
-        elCountdownPhone = document.createElement('div');
-        elCountdownPhone.className = 'cy-countdown-phone';
-        elCountdown.append(elCountdownHint, elCountdownSec, elCountdownPhone);
-
-        const innerFrame = document.createElement('div');
-        innerFrame.className = 'cy-inner-frame';
-        innerFrame.append(progressCard, splitRow, btnsWrap, elCountdown, elStatus);
-        body.append(innerFrame);
+        body.append(progressCard, talkCol, btnsWrap, elStatus);
         panel.append(head, body);
         document.body.appendChild(panel);
 
