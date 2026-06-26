@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.2
-// @description  畅言加好友阿陌专用，修复申请添加朋友页验证消息填入检测
+// @version      9.20.3
+// @description  畅言加好友阿陌专用，修复提交未完成就处理下一号
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.2';
+    const SCRIPT_VERSION = '9.20.3';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -47,6 +47,8 @@
         friendApplyWaitMs: 4500,
         actionSettleMs: 360,
         confirmWaitMs: 580,
+        submitSettleMinMs: 1000,
+        submitWaitMs: 16000,
         confirmSettleMs: 320,
         panelCloseMs: 500,
         panelCloseMinMs: 350,
@@ -1242,7 +1244,34 @@
         if (!btn) return false;
         if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
         if (btn.classList.contains('semi-button-disabled')) return false;
+        if (btn.classList.contains('semi-button-loading')) return false;
         return true;
+    }
+
+    function nodeHasSpinner(el) {
+        if (!el) return false;
+        if (el.classList.contains('semi-button-loading')) return true;
+        if (el.getAttribute('aria-busy') === 'true') return true;
+        if (el.querySelector(
+            '.semi-spin, .semi-spin-wrapper, .semi-icon-loading, .semi-icon-spin, ' +
+            '[class*="spin"], [class*="Spin"], [class*="loading"], [class*="Loading"]'
+        )) return true;
+        return false;
+    }
+
+    function isFinishButtonLoading() {
+        const btn = findFinishButton();
+        if (nodeHasSpinner(btn)) return true;
+        const action = document.querySelector('.wk-viewqueueheader-content-action');
+        if (nodeHasSpinner(action)) return true;
+        if (isFriendApplyRouteOpen() && btn && !isFinishButtonEnabled(btn) && nodeHasSpinner(btn.closest('.wk-viewqueueheader-content-action'))) {
+            return true;
+        }
+        return false;
+    }
+
+    function isSubmitInProgress() {
+        return isFinishButtonLoading() || isFriendApplyRouteOpen() || isAddFriendModalOpen();
     }
 
     async function clickFinishButton(maxWait) {
@@ -1258,11 +1287,50 @@
                     btn.click();
                 }
                 await delay(PACE.confirmClickMs);
+                for (let i = 0; i < 10; i++) {
+                    if (isFinishButtonLoading() || !isFriendApplyRouteOpen()) return true;
+                    await delay(PACE.pollFastMs);
+                }
                 return true;
             }
             await delay(PACE.pollFastMs);
         }
         return false;
+    }
+
+    /** 等待「完成」提交结束：loading 消失且离开申请页后再继续 */
+    async function waitSubmitComplete(phone) {
+        if (!isSubmitInProgress()) return true;
+
+        await delay(PACE.submitSettleMinMs);
+        const startAt = Date.now();
+        const endAt = startAt + PACE.submitWaitMs;
+        let sawLoading = false;
+
+        while (Date.now() < endAt) {
+            if (detectRateLimit()) return false;
+
+            const loading = isFinishButtonLoading();
+            const onApply = isFriendApplyRouteOpen();
+            const modalOpen = isAddFriendModalOpen();
+            if (loading) sawLoading = true;
+
+            if (phone) {
+                setStatus(loading ? `提交中: ${phone}（请稍候）` : `等待提交: ${phone}`);
+            }
+
+            if (!loading && !onApply && !modalOpen) {
+                const elapsed = Date.now() - startAt;
+                if (sawLoading || elapsed >= PACE.submitSettleMinMs + 600) {
+                    await delay(450);
+                    if (!isSubmitInProgress()) return true;
+                }
+            }
+
+            await delay(PACE.pollNormalMs);
+        }
+
+        return !isSubmitInProgress();
     }
 
     function findRemarkInputSync() {
@@ -1325,16 +1393,6 @@
         return remarkValueMatches(readInputValue(input), msg);
     }
 
-    async function waitSubmitSettled() {
-        await delay(PACE.confirmSettleMs);
-        const endAt = Date.now() + PACE.confirmWaitMs;
-        while (Date.now() < endAt) {
-            if (!isAddFriendModalOpen() && !isFriendApplyRouteOpen()) break;
-            if (detectRateLimit() || detectUserNotFound()) break;
-            await delay(PACE.pollFastMs);
-        }
-    }
-
     async function checkRemarkFilled(input, expected) {
         const fresh = getFriendApplyRemarkInput() || input;
         if (remarkValueMatches(readInputValue(fresh), expected)) return true;
@@ -1376,6 +1434,14 @@
      */
     async function addFriendAttempt(phone) {
         if (detectRateLimit()) return 'rate_limit';
+
+        if (isFinishButtonLoading()) {
+            setStatus(`上一号仍在提交，等待…`);
+            if (!(await waitSubmitComplete(phone))) {
+                if (detectRateLimit()) return 'rate_limit';
+                return 'retry';
+            }
+        }
 
         const input = findSearchInput() || await waitForSelector(SEARCH_INPUT_SEL);
         if (!input) return 'retry';
@@ -1430,7 +1496,12 @@
             setStatus(`未找到「完成」按钮，重试: ${phone}`);
             return 'retry';
         }
-        await waitSubmitSettled();
+
+        if (!(await waitSubmitComplete(phone))) {
+            if (detectRateLimit()) return 'rate_limit';
+            setStatus(`提交未完成，重试: ${phone}`);
+            return 'retry';
+        }
 
         outcome = checkRateLimitOrNotFound();
         if (outcome) return outcome;
@@ -1501,6 +1572,11 @@
             if (detectRateLimit(true)) {
                 await onRateLimitHit(phone);
                 continue;
+            }
+
+            if (isFinishButtonLoading()) {
+                setStatus(`等待上一号提交完成…`);
+                await waitSubmitComplete('');
             }
 
             setStatus(`处理: ${phone}`);
