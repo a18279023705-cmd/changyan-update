@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.17.0
-// @description  畅言加好友阿陌专用，频繁必等提示消失+缓冲，移后补扫，暂停保存进度（9.17 频控稳定性）
+// @version      9.17.1
+// @description  畅言加好友阿陌专用，频繁必等+面板倒计时，移后补扫，暂停保存进度
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
