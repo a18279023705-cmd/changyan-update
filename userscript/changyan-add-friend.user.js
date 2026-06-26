@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.4
-// @description  畅言加好友阿陌专用，修复切页回来重复添加同一号
+// @version      9.20.5
+// @description  畅言加好友阿陌专用，修复资料页未加载就误判重试
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.4';
+    const SCRIPT_VERSION = '9.20.5';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -43,6 +43,7 @@
         afterDeferMs: 1500,
         afterRetryMs: 900,
         searchWaitMs: 520,
+        searchProfileWaitMs: 7000,
         actionWaitMs: 700,
         friendApplyWaitMs: 4500,
         actionSettleMs: 360,
@@ -1130,23 +1131,72 @@
     }
 
     function findAddFriendButton(root = document) {
-        return Array.from(root.querySelectorAll('button, div[role="button"]'))
-            .find(el => !isOurUI(el) && (el.innerText || '').includes('添加好友')) || null;
+        const scopes = [
+            ...document.querySelectorAll(
+                '.wk-userinfo-footer-sendbutton, .wk-userInfo-footer, .wk-userinfo, .wk-userInfo'
+            ),
+            root,
+        ];
+        for (const scope of scopes) {
+            const nodes = scope.querySelectorAll(
+                'button, .semi-button, [role="button"], a, .wk-userinfo-footer-sendbutton, .wk-userInfo-footer-sendbutton'
+            );
+            for (const el of nodes) {
+                if (isOurUI(el)) continue;
+                const text = (el.innerText || el.textContent || '').replace(/\s+/g, '').trim();
+                if (text !== '添加好友' && !text.includes('添加好友')) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) continue;
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                if (el.classList.contains('semi-button-disabled')) continue;
+                return el;
+            }
+        }
+        return null;
     }
 
-    /** 回车后轮询到结果即继续，最长仍不超过 searchWaitMs */
+    async function clickAddFriendButton(phone) {
+        const endAt = Date.now() + PACE.searchProfileWaitMs;
+        while (Date.now() < endAt) {
+            const btn = findAddFriendButton();
+            if (btn) {
+                setStatus(`点击添加好友: ${phone}`);
+                const props = getReactProps(btn);
+                try {
+                    if (props?.onClick) props.onClick({});
+                    else btn.click();
+                } catch (e) {
+                    btn.click();
+                }
+                await delay(PACE.actionSettleMs);
+                return true;
+            }
+            if (findExistingFriendPanel()) return false;
+            const blocked = checkRateLimitOrNotFound();
+            if (blocked) return blocked;
+            setStatus(`等待资料页「添加好友」: ${phone}`);
+            await delay(PACE.pollNormalMs);
+        }
+        return null;
+    }
+
+    /** 回车后轮询到用户资料页：优先等「添加好友」，勿与已是好友面板混淆 */
     async function waitSearchOutcome(phone, waitFriendPanel) {
-        const endAt = Date.now() + PACE.searchWaitMs;
+        const endAt = Date.now() + PACE.searchProfileWaitMs;
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound();
             if (blocked) return blocked;
+            if (findAddFriendButton()) return null;
             if (findExistingFriendPanel()) {
                 return await handleAlreadyFriend(phone, false);
             }
-            if (findAddFriendButton()) return null;
             await delay(PACE.pollFastMs);
         }
-        return await checkAfterAction(phone, waitFriendPanel && !findAddFriendButton());
+        if (findAddFriendButton()) return null;
+        if (findExistingFriendPanel()) {
+            return await handleAlreadyFriend(phone, waitFriendPanel);
+        }
+        return checkRateLimitOrNotFound();
     }
 
     function waitForSelector(selector, maxMs = 40 * PACE.pollFastMs, interval = PACE.pollFastMs) {
@@ -1161,6 +1211,8 @@
     }
 
     function findExistingFriendPanel() {
+        if (findAddFriendButton()) return null;
+
         const sendBtns = Array.from(document.querySelectorAll('button, div[role="button"], a'))
             .filter(el => {
                 if (isOurUI(el)) return false;
@@ -1614,14 +1666,15 @@
         }
         if (outcome) return outcome;
 
-        const addBtn = findAddFriendButton() || await waitForButton('添加好友', 'button', 40, PACE.pollNormalMs);
-        if (!addBtn) {
-            outcome = await checkAfterAction(phone, true);
-            if (outcome) return outcome;
+        const clickResult = await clickAddFriendButton(phone);
+        if (clickResult === 'rate_limit' || clickResult === 'not_found') return clickResult;
+        if (!clickResult) {
+            if (findExistingFriendPanel()) {
+                return await handleAlreadyFriend(phone, false);
+            }
+            setStatus(`未找到「添加好友」按钮，重试: ${phone}`);
             return 'retry';
         }
-
-        addBtn.click();
 
         const remarkResult = await waitForRemarkInput(phone);
         if (typeof remarkResult === 'string') return remarkResult;
