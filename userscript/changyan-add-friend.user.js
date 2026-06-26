@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.16.0
-// @description  畅言加好友阿陌专用，稳定跑够后频繁才冷却约65秒，暂停保存进度（9.16 优化 DOM/轮询/缓存）
+// @version      9.17.0
+// @description  畅言加好友阿陌专用，频繁必等提示消失+缓冲，移后补扫，暂停保存进度（9.17 频控稳定性）
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,41 +15,45 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.16.0';
+    const SCRIPT_VERSION = '9.17.0';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
     const MIN_VERSION_URL = RAW_BASE + '/changyan-add-friend.min-version.txt';
     const DOWNLOAD_URL = RAW_BASE + '/changyan-add-friend.user.js';
 
-    /** 稳定跑够后频繁过多才冷却 ~65 秒；卡住超时强制恢复 */
+    /** 稳定跑够后频繁过多才长冷却；单次频繁必等提示消失 */
     const PACE = {
         stableSuccessMin: 8,
         stableSuccessMax: 18,
         frequentHitThreshold: 2,
-        cooldownCenterSec: 65,
-        cooldownJitterSec: 10,
+        cooldownCenterSec: 75,
+        cooldownJitterSec: 15,
+        rateLimitMinSec: 50,
+        rateLimitMaxSec: 72,
+        rateLimitStreakExtraSec: 18,
+        rateLimitClearMaxSec: 120,
         stuckForceMs: 18000,
-        afterSuccessMs: 500,
-        afterNotFoundMs: 450,
-        afterSkipMs: 400,
-        afterDeferMs: 200,
-        afterRetryMs: 750,
-        searchWaitMs: 380,
-        actionWaitMs: 600,
-        actionSettleMs: 320,
-        confirmWaitMs: 500,
-        confirmSettleMs: 280,
-        panelCloseMs: 450,
-        panelCloseMinMs: 300,
-        panelCloseRetryMs: 400,
-        remarkCheckMs: 200,
-        remarkSettleMs: 150,
-        confirmClickMs: 400,
-        typingMs: 80,
-        typingAfterMs: 100,
-        pollFastMs: 200,
-        pollNormalMs: 250,
+        afterSuccessMs: 900,
+        afterNotFoundMs: 550,
+        afterSkipMs: 500,
+        afterDeferMs: 1500,
+        afterRetryMs: 900,
+        searchWaitMs: 520,
+        actionWaitMs: 700,
+        actionSettleMs: 360,
+        confirmWaitMs: 580,
+        confirmSettleMs: 320,
+        panelCloseMs: 500,
+        panelCloseMinMs: 350,
+        panelCloseRetryMs: 450,
+        remarkCheckMs: 220,
+        remarkSettleMs: 180,
+        confirmClickMs: 450,
+        typingMs: 90,
+        typingAfterMs: 140,
+        pollFastMs: 220,
+        pollNormalMs: 280,
     };
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
@@ -71,6 +75,7 @@
     let successSinceCooldown = 0;
     let stableSuccessTarget = 0;
     let frequentHitCount = 0;
+    let consecutiveRateLimitHits = 0;
     let running = false;
     let stopRequested = false;
     let successCount = 0;
@@ -88,18 +93,26 @@
 
     const RATE_LIMIT_HINTS = [
         '请不要频繁点击',
+        '请不要频繁',
+        '操作频繁',
+        '点击过于频繁',
         '1分钟后再试',
         '请1分钟后再试',
         '请一分钟后再试',
+        '稍后再试',
+        '请稍候',
     ];
     const HINT_SELECTORS = [
         '.semi-toast-content',
+        '.semi-toast-wrapper',
         '.semi-notification-content',
+        '[role="alert"]',
         '[class*="toast"]',
         '[class*="Toast"]',
         '.semi-modal-content',
         '[class*="modal"]',
         '[class*="Modal"]',
+        '[class*="notification"]',
     ];
 
     let panel = null;
@@ -180,7 +193,7 @@
     function setStatus(text) {
         if (elStatus) {
             elStatus.textContent = text;
-            if (/随机等待|频繁限制|冷却/.test(text)) elStatus.classList.add('cy-waiting');
+            if (/随机等待|频繁|冷却/.test(text)) elStatus.classList.add('cy-waiting');
             else elStatus.classList.remove('cy-waiting');
         }
         updateMiniButton();
@@ -295,8 +308,10 @@
         for (const sel of HINT_SELECTORS) {
             document.querySelectorAll(sel).forEach(el => {
                 if (isOurUI(el)) return;
-                const t = (el.innerText || '').trim();
+                const t = (el.innerText || el.textContent || '').trim();
                 if (t) chunks.push(t);
+                const aria = (el.getAttribute('aria-label') || '').trim();
+                if (aria) chunks.push(aria);
             });
         }
         return chunks.join('\n');
@@ -384,10 +399,11 @@
         panel.style.margin = '0';
     }
 
-    function detectRateLimit() {
+    function detectRateLimit(force = false) {
+        if (force) invalidateVisibleTextCache();
         const quick = collectHintText();
         if (quick && textHasAny(quick, RATE_LIMIT_HINTS)) return true;
-        return textHasAny(getVisibleText(), RATE_LIMIT_HINTS);
+        return textHasAny(getVisibleText(force), RATE_LIMIT_HINTS);
     }
 
     function detectUserNotFound() {
@@ -407,15 +423,58 @@
         successSinceCooldown = 0;
         frequentHitCount = 0;
         rateLimitRoundCount = 0;
+        consecutiveRateLimitHits = 0;
         rollStableSuccessTarget();
     }
 
-    /** 稳定跑够本轮随机目标后，频繁过多才触发 ~65 秒冷却 */
+    function rateLimitWaitSec() {
+        const span = PACE.rateLimitMaxSec - PACE.rateLimitMinSec + 1;
+        const base = PACE.rateLimitMinSec + Math.floor(Math.random() * span);
+        const extra = Math.min(
+            Math.max(0, consecutiveRateLimitHits - 1) * PACE.rateLimitStreakExtraSec,
+            120
+        );
+        return base + extra;
+    }
+
+    /** 单次频繁：至少等待 N 秒，且 toast 消失后再继续 */
+    async function waitUntilRateLimitClears(phone) {
+        invalidateVisibleTextCache();
+        await dismissOverlaySafely();
+        clearSearchInput();
+
+        const minSec = rateLimitWaitSec();
+        const minEndAt = Date.now() + minSec * 1000;
+        const hardEndAt = Date.now() + PACE.rateLimitClearMaxSec * 1000;
+
+        while (Date.now() < hardEndAt) {
+            if (stopRequested) return;
+            invalidateVisibleTextCache();
+            const stillLimited = detectRateLimit(true);
+            const leftMin = Math.max(0, Math.ceil((minEndAt - Date.now()) / 1000));
+
+            if (stillLimited) {
+                setStatus(`频繁限制 · 等待提示消失${leftMin > 0 ? ` · 缓冲 ${leftMin}s` : ''} · ${phone}`);
+            } else if (Date.now() < minEndAt) {
+                setStatus(`频繁限制 · 缓冲 ${leftMin}s · ${phone}`);
+            } else {
+                break;
+            }
+            await delay(500);
+        }
+    }
+
+    /** 稳定跑够本轮随机目标后，频繁过多才触发长冷却 */
     function shouldTriggerCooldown() {
         const roundAllDeferred =
             phoneList.length > 1 && rateLimitRoundCount >= phoneList.length;
+        const manyDeferred =
+            deferCount >= Math.max(5, Math.floor(phoneList.length * 0.12));
         const frequentTooMuch =
-            frequentHitCount >= PACE.frequentHitThreshold || roundAllDeferred;
+            frequentHitCount >= PACE.frequentHitThreshold ||
+            roundAllDeferred ||
+            manyDeferred ||
+            consecutiveRateLimitHits >= 3;
         if (!frequentTooMuch) return false;
         if (phoneList.length <= 1) return true;
         if (!stableSuccessTarget) rollStableSuccessTarget();
@@ -572,6 +631,7 @@
             successSinceCooldown,
             frequentHitCount,
             rateLimitRoundCount,
+            consecutiveRateLimitHits,
         };
     }
 
@@ -589,6 +649,7 @@
         successSinceCooldown = data.successSinceCooldown || 0;
         frequentHitCount = data.frequentHitCount || 0;
         rateLimitRoundCount = data.rateLimitRoundCount || 0;
+        consecutiveRateLimitHits = data.consecutiveRateLimitHits || 0;
         if (!stableSuccessTarget) rollStableSuccessTarget();
         updateStats();
         updateStartButtonLabel();
@@ -1146,6 +1207,19 @@
 
             const phone = phoneList[phoneIndex];
             updateStats();
+
+            if (detectRateLimit(true)) {
+                consecutiveRateLimitHits++;
+                frequentHitCount++;
+                setStatus(`检测到频繁提示，先等待再继续: ${phone}`);
+                await waitUntilRateLimitClears(phone);
+                if (shouldTriggerCooldown()) {
+                    await waitRateLimitCooldown(phone);
+                }
+                saveProgress(true);
+                continue;
+            }
+
             setStatus(`处理: ${phone}`);
             let listReordered = false;
 
@@ -1169,6 +1243,7 @@
                 phoneIndex++;
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
+                consecutiveRateLimitHits = 0;
                 updateStats();
                 setStatus(`${statsLine()} | 已完成: ${phone}`);
                 await delay(PACE.afterSuccessMs);
@@ -1178,6 +1253,7 @@
                 phoneIndex++;
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
+                consecutiveRateLimitHits = 0;
                 updateStats();
                 setStatus(`用户不存在，跳过: ${phone} | ${statsLine()}`);
                 await delay(PACE.afterNotFoundMs);
@@ -1187,18 +1263,21 @@
                 phoneIndex++;
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
+                consecutiveRateLimitHits = 0;
                 updateStats();
                 setStatus(`已是好友，跳过: ${phone} | ${statsLine()}`);
                 await delay(PACE.afterSkipMs);
             } else if (result === 'rate_limit') {
+                consecutiveRateLimitHits++;
                 frequentHitCount++;
-                await dismissOverlaySafely();
+                invalidateVisibleTextCache();
+                await waitUntilRateLimitClears(phone);
 
                 if (phoneList.length <= 1) {
                     if (shouldTriggerCooldown()) {
                         await waitRateLimitCooldown(phone);
                     } else {
-                        setStatus(`频繁: ${phone}，稍后重试当前号`);
+                        setStatus(`频繁: ${phone}，已缓冲后继续`);
                         await delay(PACE.afterDeferMs);
                     }
                 } else {
@@ -1209,6 +1288,7 @@
                     if (shouldTriggerCooldown()) {
                         setStatus(`稳定 ${successSinceCooldown}/${stableSuccessTarget} 个后频繁过多，冷却后继续: ${deferred}`);
                         await waitRateLimitCooldown(deferred);
+                        consecutiveRateLimitHits = 0;
                     } else {
                         const nextPhone = phoneList[phoneIndex] || '';
                         if (isNewDefer) {
