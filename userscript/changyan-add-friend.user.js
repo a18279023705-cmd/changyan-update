@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.0
-// @description  畅言加好友阿陌专用，天空蓝界面，频繁限制60-100秒随机
+// @version      9.20.1
+// @description  畅言加好友阿陌专用，修复频繁时同一号重复提交
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.0';
+    const SCRIPT_VERSION = '9.20.1';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
@@ -517,11 +517,8 @@
     }
 
     /** 频繁等待：短缓冲与长冷却合并为一次倒计时 */
-    async function handleRateLimitWait(phone) {
+    async function handleRateLimitWait(phone, statusSub = '') {
         const useLongCooldown = shouldTriggerCooldown();
-        invalidateVisibleTextCache();
-        await dismissOverlaySafely();
-        clearSearchInput();
 
         const totalSec = useLongCooldown
             ? Math.max(1, Math.round(cooldownDelayMs() / 1000))
@@ -530,12 +527,48 @@
         await runCountdownWait({
             label: useLongCooldown ? '频繁过多 · 长冷却' : '频繁限制 · 等待中',
             totalSec,
-            phone,
+            phone: statusSub || phone,
             alsoWaitClear: !useLongCooldown,
             hardMaxSec: useLongCooldown ? 0 : PACE.rateLimitClearMaxSec,
         });
 
         if (useLongCooldown) resetFrequentTracking();
+    }
+
+    /** 统一频繁处理：移号 + 等待 + 清搜索，避免同一号连续回车提交 */
+    async function onRateLimitHit(phone) {
+        consecutiveRateLimitHits++;
+        frequentHitCount++;
+        invalidateVisibleTextCache();
+        await dismissOverlaySafely();
+        clearSearchInput();
+
+        let deferredPhone = phone;
+        let listReordered = false;
+        if (phoneList.length > 1) {
+            const { phone: d } = deferCurrentPhoneToEnd();
+            deferredPhone = d || phone;
+            listReordered = true;
+            rateLimitRoundCount++;
+        }
+
+        const nextPhone = phoneList[phoneIndex] || '';
+        const countdownSub =
+            phoneList.length > 1 && nextPhone && nextPhone !== deferredPhone
+                ? `移后 ${deferredPhone} · 下一号 ${nextPhone}`
+                : deferredPhone;
+
+        await handleRateLimitWait(deferredPhone, countdownSub);
+
+        if (phoneList.length > 1) {
+            setStatus(`已移后 ${deferredPhone} → 继续 ${nextPhone || '—'}`);
+            if (listReordered) savePhoneList();
+        } else {
+            setStatus(`频繁缓冲结束，重试 ${deferredPhone}`);
+        }
+        updateStats();
+        await delay(PACE.afterDeferMs);
+        saveProgress(true);
     }
 
     function rateLimitWaitSec() {
@@ -1173,10 +1206,17 @@
         if (!input) return 'retry';
         cachedSearchInput = input;
 
-        await setInputValueAndEnter(input, phone);
-        invalidateVisibleTextCache();
-
-        let outcome = await waitSearchOutcome(phone, true);
+        const current = readInputValue(input);
+        let outcome;
+        if (current === phone) {
+            // 搜索框已是当前号：不再按回车，避免同一号连续提交
+            outcome = await waitSearchOutcome(phone, true);
+        } else {
+            if (current) clearSearchInput(input);
+            await setInputValueAndEnter(input, phone);
+            invalidateVisibleTextCache();
+            outcome = await waitSearchOutcome(phone, true);
+        }
         if (outcome) return outcome;
 
         const addBtn = findAddFriendButton() || await waitForButton('添加好友', 'button', 40, PACE.pollNormalMs);
@@ -1273,15 +1313,11 @@
             updateStats();
 
             if (detectRateLimit(true)) {
-                consecutiveRateLimitHits++;
-                frequentHitCount++;
-                await handleRateLimitWait(phone);
-                saveProgress(true);
+                await onRateLimitHit(phone);
                 continue;
             }
 
             setStatus(`处理: ${phone}`);
-            let listReordered = false;
 
             const attemptResult = await Promise.race([
                 addFriendAttempt(phone).then(result => ({ type: 'done', result })),
@@ -1328,36 +1364,14 @@
                 setStatus(`已是好友，跳过: ${phone} | ${statsLine()}`);
                 await delay(PACE.afterSkipMs);
             } else if (result === 'rate_limit') {
-                consecutiveRateLimitHits++;
-                frequentHitCount++;
-                invalidateVisibleTextCache();
-
-                let waitPhone = phone;
-                if (phoneList.length > 1) {
-                    const { phone: deferred } = deferCurrentPhoneToEnd();
-                    listReordered = true;
-                    rateLimitRoundCount++;
-                    waitPhone = deferred;
-                }
-
-                await handleRateLimitWait(waitPhone);
-
-                if (phoneList.length > 1) {
-                    const nextPhone = phoneList[phoneIndex] || '—';
-                    setStatus(`已移后 ${waitPhone} → 继续 ${nextPhone}`);
-                    updateStats();
-                    await delay(PACE.afterDeferMs);
-                } else {
-                    setStatus(`频繁缓冲结束，重试 ${waitPhone}`);
-                    await delay(PACE.afterDeferMs);
-                }
+                await onRateLimitHit(phone);
             } else {
                 setStatus(`未完成添加，重试当前号: ${phone}`);
                 await dismissOverlaySafely();
+                clearSearchInput();
                 await delay(PACE.afterRetryMs);
             }
 
-            if (listReordered) savePhoneList();
             saveProgress(stopRequested);
 
             if (stopRequested) {
