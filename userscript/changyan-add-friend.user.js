@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.18.0
-// @description  畅言加好友阿陌专用，频繁统一倒计时等待，移后补扫，暂停保存进度
+// @version      9.18.1
+// @description  畅言加好友阿陌专用，天空蓝界面，频繁统一倒计时，移后补扫
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,7 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.18.0';
+    const SCRIPT_VERSION = '9.18.1';
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const VERSION_URL = RAW_BASE + '/changyan-add-friend.version.txt';
@@ -1705,154 +1705,195 @@
         style.textContent = `
             #cy-add-friend-panel {
                 position: fixed; top: 12px; right: 12px; z-index: 99999;
-                width: 372px; background: #ffffff;
-                border-radius: 18px; overflow: hidden;
-                box-shadow: 0 20px 50px rgba(15,23,42,0.16), 0 0 0 1px rgba(148,163,184,0.18);
+                width: 376px; background: #ffffff;
+                border-radius: 20px; overflow: hidden;
+                border: 1px solid rgba(125,211,252,0.55);
+                box-shadow:
+                    0 24px 60px rgba(14,165,233,0.14),
+                    0 8px 24px rgba(15,23,42,0.08),
+                    inset 0 1px 0 rgba(255,255,255,0.9);
                 font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
                 font-size: 13px; color: #0f172a;
             }
             #cy-add-friend-panel.cy-minimized { display: none !important; }
             #cy-add-friend-panel .cy-head {
-                display: flex; align-items: center; justify-content: space-between;
-                padding: 14px 16px;
-                background: linear-gradient(135deg, #0c4a6e 0%, #0369a1 45%, #0ea5e9 100%);
-                color: #fff; user-select: none;
+                position: relative; display: flex; align-items: center; justify-content: space-between;
+                padding: 16px 16px 15px; overflow: hidden; user-select: none;
+                background: linear-gradient(135deg, #e0f2fe 0%, #bae6fd 28%, #7dd3fc 62%, #38bdf8 100%);
+                border-bottom: 1px solid rgba(255,255,255,0.45);
             }
+            #cy-add-friend-panel .cy-head::before {
+                content: ""; position: absolute; inset: 0; pointer-events: none;
+                background:
+                    radial-gradient(circle at 88% 18%, rgba(255,255,255,0.55) 0%, transparent 42%),
+                    radial-gradient(circle at 12% 85%, rgba(255,255,255,0.28) 0%, transparent 36%);
+            }
+            #cy-add-friend-panel .cy-head-main { position: relative; z-index: 1; min-width: 0; }
             #cy-add-friend-panel .cy-head-title {
-                font-weight: 800; font-size: 17px; line-height: 1.2; letter-spacing: 0.01em;
+                font-weight: 800; font-size: 18px; line-height: 1.15; letter-spacing: 0.02em;
+                color: #075985; text-shadow: 0 1px 0 rgba(255,255,255,0.45);
             }
             #cy-add-friend-panel .cy-head-sub {
-                font-size: 11px; margin-top: 4px; color: rgba(255,255,255,0.82);
+                display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+                margin-top: 6px; font-size: 11px; color: #0369a1;
+            }
+            #cy-add-friend-panel .cy-badge {
+                display: inline-flex; align-items: center; padding: 2px 8px;
+                border-radius: 999px; font-size: 10px; font-weight: 700;
+                color: #0369a1; background: rgba(255,255,255,0.72);
+                border: 1px solid rgba(255,255,255,0.85);
+                box-shadow: 0 1px 2px rgba(14,165,233,0.12);
             }
             #cy-add-friend-panel .cy-head-btn {
-                background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.2);
-                color: #fff; width: 32px; height: 32px; border-radius: 10px; cursor: pointer;
-                line-height: 1; font-size: 18px; flex-shrink: 0;
-                transition: background .15s ease;
+                position: relative; z-index: 1;
+                background: rgba(255,255,255,0.55); border: 1px solid rgba(255,255,255,0.75);
+                color: #0369a1; width: 34px; height: 34px; border-radius: 11px; cursor: pointer;
+                line-height: 1; font-size: 20px; font-weight: 500; flex-shrink: 0;
+                box-shadow: 0 2px 8px rgba(14,165,233,0.12);
+                transition: background .15s ease, transform .12s ease;
             }
-            #cy-add-friend-panel .cy-head-btn:hover { background: rgba(255,255,255,0.24); }
+            #cy-add-friend-panel .cy-head-btn:hover {
+                background: rgba(255,255,255,0.82); transform: translateY(-1px);
+            }
             #cy-add-friend-panel .cy-body {
-                padding: 14px; display: flex; flex-direction: column; gap: 12px;
-                background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+                padding: 14px; display: flex; flex-direction: column; gap: 11px;
+                background: linear-gradient(180deg, #f0f9ff 0%, #f8fafc 38%, #ffffff 100%);
             }
             #cy-add-friend-panel .cy-card {
-                background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
-                padding: 14px; box-shadow: 0 1px 3px rgba(15,23,42,0.05);
+                background: rgba(255,255,255,0.92); border: 1px solid #dbeafe;
+                border-radius: 16px; padding: 14px 14px 13px;
+                box-shadow: 0 2px 10px rgba(14,165,233,0.06);
             }
             #cy-add-friend-panel .cy-progress-head {
                 display: flex; align-items: baseline; justify-content: space-between;
-                gap: 8px; margin-bottom: 12px;
+                gap: 8px; margin-bottom: 11px;
             }
             #cy-add-friend-panel .cy-progress-label {
-                font-size: 12px; font-weight: 600; color: #64748b; letter-spacing: 0.04em;
+                font-size: 11px; font-weight: 700; color: #64748b;
+                letter-spacing: 0.06em; text-transform: uppercase;
             }
             #cy-add-friend-panel .cy-progress {
-                font-size: 16px; color: #0f172a; font-weight: 800; font-variant-numeric: tabular-nums;
+                font-size: 17px; color: #0c4a6e; font-weight: 800; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-stats {
-                display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px;
+                display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 11px;
             }
             #cy-add-friend-panel .cy-chip {
                 display: flex; flex-direction: column; align-items: center;
-                justify-content: center; gap: 3px; padding: 8px 4px; border-radius: 12px;
-                border: 1px solid transparent; min-height: 52px; min-width: 0;
+                justify-content: center; gap: 3px; padding: 8px 3px; border-radius: 12px;
+                border: 1px solid transparent; min-height: 54px; min-width: 0;
+                transition: transform .12s ease;
             }
             #cy-add-friend-panel .cy-chip-num {
                 font-size: 17px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-chip-label {
-                font-size: 10px; font-weight: 600; opacity: 0.88;
+                font-size: 10px; font-weight: 600; opacity: 0.9;
             }
             #cy-add-friend-panel .cy-chip-ok {
-                background: #ecfdf5; border-color: #bbf7d0; color: #047857;
+                background: linear-gradient(180deg,#ecfdf5,#d1fae5); border-color: #a7f3d0; color: #047857;
             }
             #cy-add-friend-panel .cy-chip-fail {
-                background: #fef2f2; border-color: #fecaca; color: #b91c1c;
+                background: linear-gradient(180deg,#fef2f2,#fee2e2); border-color: #fecaca; color: #b91c1c;
             }
             #cy-add-friend-panel .cy-chip-skip {
-                background: #f8fafc; border-color: #e2e8f0; color: #475569;
+                background: linear-gradient(180deg,#f8fafc,#f1f5f9); border-color: #e2e8f0; color: #475569;
             }
             #cy-add-friend-panel .cy-chip-defer {
-                background: #fffbeb; border-color: #fde68a; color: #b45309;
+                background: linear-gradient(180deg,#fffbeb,#fef3c7); border-color: #fde68a; color: #b45309;
             }
             #cy-add-friend-panel .cy-progress-track {
-                height: 7px; background: #e2e8f0; border-radius: 99px; overflow: hidden;
+                height: 8px; background: #e0f2fe; border-radius: 99px; overflow: hidden;
+                box-shadow: inset 0 1px 2px rgba(14,165,233,0.08);
             }
             #cy-add-friend-panel .cy-progress-bar {
                 height: 100%; width: 0%; border-radius: 99px;
-                background: linear-gradient(90deg, #38bdf8, #0284c7);
+                background: linear-gradient(90deg, #7dd3fc, #0ea5e9, #0284c7);
+                box-shadow: 0 0 10px rgba(14,165,233,0.35);
                 transition: width .35s ease;
             }
             #cy-add-friend-panel .cy-field-card {
-                background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
-                padding: 12px; box-shadow: 0 1px 3px rgba(15,23,42,0.04);
+                background: rgba(255,255,255,0.94); border: 1px solid #dbeafe;
+                border-radius: 16px; padding: 12px 13px;
+                box-shadow: 0 2px 8px rgba(14,165,233,0.05);
                 box-sizing: border-box; min-width: 0;
             }
             #cy-add-friend-panel .cy-label {
-                display: block; margin-bottom: 8px; color: #475569;
-                font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+                display: block; margin-bottom: 8px; color: #0369a1;
+                font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
             }
             #cy-add-friend-panel textarea {
-                width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical;
-                border: 1px solid #cbd5e1; border-radius: 10px; padding: 10px 11px;
-                font-size: 12px; line-height: 1.5; font-family: inherit;
-                background: #f8fafc; color: #0f172a;
+                width: 100%; box-sizing: border-box; min-height: 82px; resize: vertical;
+                border: 1px solid #bfdbfe; border-radius: 12px; padding: 10px 12px;
+                font-size: 12px; line-height: 1.55; font-family: inherit;
+                background: #f8fbff; color: #0f172a;
                 transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
             }
             #cy-add-friend-panel textarea:focus {
                 outline: none; border-color: #38bdf8; background: #fff;
-                box-shadow: 0 0 0 3px rgba(56,189,248,0.18);
+                box-shadow: 0 0 0 3px rgba(56,189,248,0.2);
             }
             #cy-add-friend-panel .cy-btns-wrap { display: flex; flex-direction: column; gap: 8px; }
             #cy-add-friend-panel .cy-btns-row { display: flex; gap: 8px; }
             #cy-add-friend-panel button.cy-btn {
                 flex: 1; min-width: 0; padding: 11px 10px; border: none;
-                border-radius: 11px; cursor: pointer; color: #fff; font-size: 13px;
+                border-radius: 12px; cursor: pointer; color: #fff; font-size: 13px;
                 font-weight: 700; font-family: inherit;
-                box-shadow: 0 2px 8px rgba(15,23,42,0.1);
+                box-shadow: 0 3px 10px rgba(15,23,42,0.1);
                 transition: transform .12s ease, filter .12s ease, box-shadow .12s ease;
             }
             #cy-add-friend-panel button.cy-btn:hover:not(:disabled) {
-                filter: brightness(1.04); transform: translateY(-1px);
+                filter: brightness(1.03); transform: translateY(-1px);
+                box-shadow: 0 5px 14px rgba(15,23,42,0.12);
             }
             #cy-add-friend-panel button.cy-btn:active:not(:disabled) { transform: translateY(0); }
             #cy-add-friend-panel button.cy-btn:disabled:not(.cy-btn-stop) {
-                opacity: 0.48; cursor: not-allowed; transform: none; box-shadow: none;
+                opacity: 0.46; cursor: not-allowed; transform: none; box-shadow: none;
             }
-            #cy-add-friend-panel .cy-btn-import { background: linear-gradient(180deg,#38bdf8,#0284c7); }
-            #cy-add-friend-panel .cy-btn-clear { background: linear-gradient(180deg,#64748b,#475569); }
-            #cy-add-friend-panel .cy-btn-start { background: linear-gradient(180deg,#22c55e,#15803d); }
+            #cy-add-friend-panel .cy-btn-import {
+                background: linear-gradient(180deg, #7dd3fc, #0ea5e9);
+                box-shadow: 0 3px 12px rgba(14,165,233,0.28);
+            }
+            #cy-add-friend-panel .cy-btn-clear { background: linear-gradient(180deg,#94a3b8,#64748b); }
+            #cy-add-friend-panel .cy-btn-start {
+                background: linear-gradient(180deg,#4ade80,#16a34a);
+                box-shadow: 0 3px 12px rgba(22,163,74,0.22);
+            }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop {
-                background: linear-gradient(180deg,#f87171,#dc2626) !important;
+                background: linear-gradient(180deg,#fb7185,#e11d48) !important;
+                box-shadow: 0 3px 12px rgba(225,29,72,0.2) !important;
             }
             #cy-add-friend-panel button.cy-btn.cy-btn-stop:disabled {
-                opacity: 0.5 !important; cursor: not-allowed !important;
+                opacity: 0.48 !important; cursor: not-allowed !important;
                 transform: none !important; box-shadow: none !important;
             }
             #cy-add-friend-panel .cy-status {
-                padding: 14px 16px; background: #fff; border: 1px solid #e2e8f0;
-                border-radius: 14px; font-size: 13px; color: #334155;
-                min-height: 64px; word-break: break-all; line-height: 1.6;
-                font-weight: 500; box-shadow: 0 1px 3px rgba(15,23,42,0.04);
+                padding: 14px 16px; background: rgba(255,255,255,0.95);
+                border: 1px solid #dbeafe; border-radius: 16px;
+                font-size: 13px; color: #334155;
+                min-height: 62px; word-break: break-all; line-height: 1.62;
+                font-weight: 500; box-shadow: 0 2px 8px rgba(14,165,233,0.05);
             }
             #cy-add-friend-panel .cy-status.cy-busy {
-                border-color: #bae6fd; background: #f0f9ff; color: #0369a1;
+                border-color: #7dd3fc; background: linear-gradient(180deg,#f0f9ff,#e0f2fe);
+                color: #0369a1; font-weight: 600;
             }
             #cy-add-friend-panel .cy-status.cy-countdown-mode {
                 text-align: center; border-color: #fcd34d;
                 background: linear-gradient(180deg, #fffbeb 0%, #fef3c7 100%);
-                color: #92400e; min-height: 108px;
+                color: #92400e; min-height: 110px;
                 display: flex; flex-direction: column; align-items: center; justify-content: center;
+                box-shadow: 0 4px 16px rgba(245,158,11,0.12);
             }
             #cy-add-friend-panel .cy-status-count-label {
                 font-size: 12px; font-weight: 700; color: #b45309; margin-bottom: 6px;
             }
             #cy-add-friend-panel .cy-status-count-sec {
-                font-size: 44px; font-weight: 800; line-height: 1;
+                font-size: 46px; font-weight: 800; line-height: 1;
                 color: #d97706; font-variant-numeric: tabular-nums;
             }
             #cy-add-friend-panel .cy-status-count-unit {
-                font-size: 16px; font-weight: 700; margin-left: 4px; color: #b45309;
+                font-size: 15px; font-weight: 700; margin-left: 3px; color: #b45309;
             }
             #cy-add-friend-panel .cy-status-count-sub {
                 margin-top: 8px; font-size: 12px; color: #92400e; opacity: 0.92;
@@ -1860,23 +1901,23 @@
             }
             #cy-mini-btn {
                 position: fixed; left: 12px; bottom: 72px; z-index: 9999;
-                width: 48px; height: 48px; border-radius: 50%; border: none;
-                background: linear-gradient(145deg, #0284c7, #0ea5e9);
+                width: 50px; height: 50px; border-radius: 50%; border: none;
+                background: linear-gradient(145deg, #7dd3fc, #0ea5e9);
                 color: #fff; cursor: pointer;
-                box-shadow: 0 8px 20px rgba(14,165,233,0.35);
+                box-shadow: 0 8px 22px rgba(14,165,233,0.32);
                 display: none; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
             }
             #cy-mini-btn.cy-visible { display: flex; }
             #cy-mini-btn.cy-running {
-                box-shadow: 0 0 0 4px rgba(56,189,248,0.22), 0 8px 20px rgba(14,165,233,0.35);
+                box-shadow: 0 0 0 4px rgba(125,211,252,0.35), 0 8px 22px rgba(14,165,233,0.32);
             }
             #cy-mini-btn.cy-waiting {
-                background: linear-gradient(145deg, #d97706, #f59e0b);
-                box-shadow: 0 0 0 4px rgba(245,158,11,0.22), 0 8px 20px rgba(245,158,11,0.28);
+                background: linear-gradient(145deg, #fbbf24, #f59e0b);
+                box-shadow: 0 0 0 4px rgba(251,191,36,0.28), 0 8px 22px rgba(245,158,11,0.28);
             }
             #cy-mini-btn .cy-mini-main { font-size: 12px; font-weight: 800; }
-            #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.95; }
+            #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.96; }
         `;
         document.head.appendChild(style);
 
@@ -1886,9 +1927,12 @@
         const head = document.createElement('div');
         head.className = 'cy-head';
         head.innerHTML = `
-            <div>
+            <div class="cy-head-main">
                 <div class="cy-head-title">畅言加好友</div>
-                <div class="cy-head-sub">阿陌专用 · 后台稳定版 ${SCRIPT_VERSION}</div>
+                <div class="cy-head-sub">
+                    <span class="cy-badge">阿陌专用</span>
+                    <span>后台稳定版 ${SCRIPT_VERSION}</span>
+                </div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
         `;
