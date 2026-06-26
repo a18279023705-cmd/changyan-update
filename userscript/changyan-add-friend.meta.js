@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.19.1
-// @description  畅言加好友阿陌专用，天空蓝界面，修复篡改猴更新检测
+// @version      9.20.0
+// @description  畅言加好友阿陌专用，天空蓝界面，频繁限制60-100秒随机
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
