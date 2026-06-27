@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.9
-// @description  畅言加好友阿陌专用，修复搜索框未显示号码就触发搜索
+// @version      9.20.10
+// @description  畅言加好友阿陌专用，修复号码已填入但未模拟回车搜索
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -1193,36 +1193,116 @@
         return isSearchInputFilled(input, keyword);
     }
 
-    async function triggerFriendAddSearchOnce(input) {
-        const friendAdd = findFriendAddInstance();
-        if (friendAdd) {
-            await new Promise(resolve => {
-                Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
-            });
-            await delay(320);
-            return;
+    function findSearchTriggerButton(input) {
+        if (!input) return null;
+        const scopes = [
+            input.closest('.wk-search-input'),
+            input.closest('.semi-input-wrapper'),
+            input.closest('.semi-input'),
+            input.closest('.wk-friendadd'),
+            input.parentElement,
+        ].filter(Boolean);
+        for (const scope of scopes) {
+            for (const sel of [
+                '.semi-input-prefix svg',
+                '.semi-input-suffix svg',
+                '.wk-search-input-icon',
+                '.wk-search-input-icon svg',
+                '[class*="search-icon"]',
+                '[class*="SearchIcon"]',
+            ]) {
+                for (const node of scope.querySelectorAll(sel)) {
+                    if (isOurUI(node)) continue;
+                    const r = node.getBoundingClientRect();
+                    if (r.width < 4 || r.height < 4) continue;
+                    return node.closest('button, [role="button"]') || node;
+                }
+            }
         }
+        return null;
+    }
+
+    function callInputEnterPress(input, keyword) {
+        const value = String(keyword || getSearchInputDisplayValue(input) || '').trim();
+        const ev = {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            target: input, currentTarget: input,
+            preventDefault() {}, stopPropagation() {},
+        };
+        try { Object.defineProperty(ev, 'target', { value: input }); } catch (e) { /* ignore */ }
+        try { Object.defineProperty(ev.target, 'value', { value, configurable: true }); } catch (e) { /* ignore */ }
 
         let el = input;
-        for (let i = 0; i < 14 && el; i++) {
+        for (let i = 0; i < 16 && el; i++) {
             const props = getReactProps(el);
             if (props?.onEnterPress) {
-                props.onEnterPress();
-                await delay(320);
-                return;
+                try { props.onEnterPress(ev); return true; } catch (e) { /* ignore */ }
+                try { props.onEnterPress(); return true; } catch (e) { /* ignore */ }
             }
             el = el.parentElement;
         }
-
-        input.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
-        }));
-        await delay(320);
+        return false;
     }
 
-    async function simulateEnterSearch(input, keyword) {
-        await triggerFriendAddSearchOnce(input);
+    async function dispatchEnterKey(input) {
+        if (!input) return;
+        input.focus();
+        await delay(60);
+        const opts = {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+            bubbles: true, cancelable: true, view: window,
+        };
+        input.dispatchEvent(new KeyboardEvent('keydown', opts));
+        input.dispatchEvent(new KeyboardEvent('keypress', opts));
+        input.dispatchEvent(new KeyboardEvent('keyup', opts));
+    }
+
+    /** 号码已填入后，只触发一次搜索（优先 onEnterPress） */
+    async function triggerSearchEnter(input, keyword) {
+        const value = String(keyword || getSearchInputDisplayValue(input) || '').trim();
+        if (!value) return false;
+
+        input.focus();
+        await delay(PACE.typingMs);
+
+        if (callInputEnterPress(input, value)) {
+            setStatus(`回车搜索: ${value}`);
+            await delay(450);
+            return true;
+        }
+
+        const searchBtn = findSearchTriggerButton(input);
+        if (searchBtn) {
+            setStatus(`点击搜索: ${value}`);
+            await humanClick(searchBtn);
+            await delay(450);
+            return true;
+        }
+
+        const friendAdd = findFriendAddInstance();
+        if (friendAdd) {
+            setStatus(`搜索用户: ${value}`);
+            await new Promise(resolve => {
+                try {
+                    friendAdd.setState({ keyword: value }, () => {
+                        Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
+                    });
+                } catch (e) {
+                    resolve();
+                }
+            });
+            await delay(450);
+            return true;
+        }
+
+        setStatus(`回车搜索: ${value}`);
+        await dispatchEnterKey(input);
+        await delay(450);
         return true;
+    }
+
+    async function triggerFriendAddSearchOnce(input, keyword) {
+        return triggerSearchEnter(input, keyword);
     }
 
     async function submitSearch(input, phone) {
@@ -1235,7 +1315,7 @@
                 setStatus(`搜索框未能填入: ${keyword}`);
                 return false;
             }
-            await triggerFriendAddSearchOnce(input);
+            await triggerSearchEnter(input, keyword);
             await delay(1200);
             return true;
         }
@@ -1248,9 +1328,7 @@
             setStatus(`搜索框未能填入: ${keyword}`);
             return false;
         }
-        input.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
-        }));
+        await triggerSearchEnter(input, keyword);
         await delay(PACE.typingAfterMs);
         return true;
     }
@@ -1987,6 +2065,10 @@
         const current = getSearchInputDisplayValue(input);
         let outcome;
         if (isSearchInputFilled(input, phone)) {
+            if (!findAddFriendButton() && !isFriendApplyRouteOpen()) {
+                await triggerSearchEnter(input, phone);
+                invalidateVisibleTextCache();
+            }
             outcome = await waitSearchOutcome(phone, true);
             if (!outcome && !findAddFriendButton() && !isFriendApplyRouteOpen()) {
                 if (!(await submitSearch(input, phone))) return 'retry';
