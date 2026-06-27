@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.0
-// @description  畅言加好友阿陌专用，频繁不等待直接下一号
+// @version      10.1.1
+// @description  畅言加好友阿陌专用，话术填好确认后再点完成
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -62,9 +62,10 @@
         panelCloseMs: 500,
         panelCloseMinMs: 350,
         panelCloseRetryMs: 450,
-        remarkCheckMs: 220,
-        remarkSettleMs: 400,
-        remarkFillWaitMs: 6000,
+        remarkCheckMs: 350,
+        remarkSettleMs: 800,
+        remarkFillWaitMs: 8000,
+        remarkBeforeCompleteMs: 900,
         confirmClickMs: 450,
         typingMs: 90,
         typingAfterMs: 140,
@@ -328,6 +329,8 @@
             if (!remarkValueMatches(readRemarkValue(input), msg)) {
                 await fillFriendApplyRemark(msg);
             }
+            if (!(await waitUntilRemarkFilled(msg))) return 'retry';
+            await delay(PACE.remarkBeforeCompleteMs);
         }
 
         if (!(await clickFinishButton(PACE.friendApplyWaitMs))) return 'retry';
@@ -1563,14 +1566,26 @@
         return remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text);
     }
 
+    async function waitUntilRemarkFilled(expected, maxMs) {
+        const text = String(expected || '').trim();
+        if (!text) return false;
+        const endAt = Date.now() + (maxMs || PACE.remarkFillWaitMs);
+        while (Date.now() < endAt) {
+            const input = getFriendApplyRemarkInput() || findRemarkInputSync();
+            if (input && remarkValueMatches(readRemarkValue(input), text)) return true;
+            await delay(PACE.pollFastMs);
+        }
+        const input = getFriendApplyRemarkInput() || findRemarkInputSync();
+        return !!(input && remarkValueMatches(readRemarkValue(input), text));
+    }
+
     async function fillFriendApplyRemark(remark) {
         const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
         if (!input) return false;
         setStatus(`填写验证消息…`);
-        const ok = await typeIntoApplyRemark(input, remark);
-        if (ok) return true;
-        const finishBtn = findFinishButton();
-        return !!(finishBtn && isFinishButtonEnabled(finishBtn));
+        if (await typeIntoApplyRemark(input, remark)) return true;
+        await delay(PACE.remarkSettleMs);
+        return waitUntilRemarkFilled(remark, PACE.remarkFillWaitMs);
     }
 
     function findFinishButton() {
@@ -1637,6 +1652,7 @@
         while (Date.now() < endAt) {
             const btn = findFinishButton();
             if (btn && isFinishButtonEnabled(btn)) {
+                await delay(PACE.remarkSettleMs);
                 const props = getReactProps(btn);
                 try {
                     if (props?.onClick) props.onClick({});
@@ -1739,8 +1755,8 @@
         if (isFriendApplyRouteOpen() || input?.closest?.('.wk-friendapply')) {
             return fillFriendApplyRemark(msg);
         }
-        await simulateTyping(input, msg);
-        return remarkValueMatches(readRemarkValue(input), msg);
+        await typeIntoApplyRemark(input, msg);
+        return waitUntilRemarkFilled(msg, PACE.remarkFillWaitMs);
     }
 
     async function checkRemarkFilled(input, expected) {
@@ -1860,6 +1876,12 @@
             setStatus(`验证消息未填入，重试: ${phone}`);
             return 'retry';
         }
+
+        if (!(await waitUntilRemarkFilled(msg))) {
+            setStatus(`话术未确认填入，重试: ${phone}`);
+            return 'retry';
+        }
+        await delay(PACE.remarkBeforeCompleteMs);
 
         let confirmed = false;
         if (isFriendApplyRouteOpen()) {
