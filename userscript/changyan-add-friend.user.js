@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.6
-// @description  畅言加好友阿陌专用，离开添加页自动让出、回来继续
+// @version      10.1.7
+// @description  畅言加好友，识别话术弹窗内填入再点完成
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -57,8 +57,9 @@
         actionSettleMs: 500,
         /** 弹窗1：搜索结果/资料页出现后再点「添加好友」 */
         profilePanelSettleMs: 2000,
-        /** 弹窗1→2：点「添加好友」后等申请页弹出 */
-        afterAddFriendClickMs: 2500,
+        /** 弹窗2：点「添加好友」后等新弹窗（话术窗）完全出现 */
+        afterAddFriendClickMs: 3200,
+        popupSettleMs: 3500,
         /** 弹窗2：申请页完全打开后再填话术、点完成 */
         friendApplySettleMs: 2800,
         confirmWaitMs: 800,
@@ -302,7 +303,7 @@
     /** 是否仍在加好友流程内（含搜索资料页、申请页、提交中） */
     function isInAddFriendFlow() {
         if (isOnFriendAddPage()) return true;
-        if (isFriendApplyRouteOpen()) return true;
+        if (isFriendApplyUiOpen()) return true;
         if (isSubmitInProgress()) return true;
         if (findAddFriendButton()) return true;
         if (inFlightPhone && (isFinishButtonLoading() || getFriendApplyRemarkInput())) return true;
@@ -360,12 +361,12 @@
             return detectRateLimit() ? 'rate_limit' : 'retry';
         }
 
-        if (!isFriendApplyRouteOpen()) return null;
+        if (!isFriendApplyUiOpen()) return null;
 
         const input = getFriendApplyRemarkInput();
         if (input && talkList.length) {
             const msg = talkList[talkIndex % talkList.length];
-            await delay(PACE.friendApplySettleMs);
+            await delay(PACE.popupSettleMs);
             if (!remarkValueMatches(readRemarkValue(input), msg)) {
                 await fillFriendApplyRemark(msg);
             }
@@ -373,7 +374,7 @@
             await delay(PACE.remarkBeforeCompleteMs);
         }
 
-        if (!(await clickFinishButton(PACE.friendApplyWaitMs))) return 'retry';
+        if (!(await clickFinishButton(PACE.friendApplyWaitMs, msg))) return 'retry';
         if (!(await waitSubmitComplete(phone))) {
             return detectRateLimit() ? 'rate_limit' : 'retry';
         }
@@ -963,7 +964,7 @@
             }
             if (running) {
                 startKeepAlive();
-                if (inFlightPhone && (isSubmitInProgress() || isFriendApplyRouteOpen())) {
+                if (inFlightPhone && (isSubmitInProgress() || isFriendApplyUiOpen())) {
                     setStatus(`已回到页面，续等: ${inFlightPhone}`);
                 }
             }
@@ -1211,13 +1212,13 @@
     }
 
     async function waitFriendApplyDialogReady(phone) {
-        setStatus(`等待申请页加载: ${phone}`);
-        const endAt = Date.now() + PACE.friendApplyWaitMs;
+        setStatus(`等待话术弹窗: ${phone}`);
+        const endAt = Date.now() + PACE.friendApplyWaitMs + PACE.popupSettleMs;
         while (Date.now() < endAt) {
-            if (isFriendApplyRouteOpen()) {
-                const input = await waitInputStable(getFriendApplyRemarkInput, 700, PACE.friendApplyWaitMs);
+            if (isFriendApplyUiOpen()) {
+                const input = await waitInputStable(getFriendApplyRemarkInput, 900, PACE.friendApplyWaitMs);
                 if (input) {
-                    await delay(PACE.friendApplySettleMs);
+                    await delay(PACE.popupSettleMs);
                     return input;
                 }
             }
@@ -1229,8 +1230,8 @@
     async function clickAddFriendButton(phone) {
         const endAt = Date.now() + PACE.searchProfileWaitMs;
         while (Date.now() < endAt) {
-            if (isFriendApplyRouteOpen()) {
-                await delay(PACE.friendApplySettleMs);
+            if (isFriendApplyUiOpen()) {
+                await delay(PACE.popupSettleMs);
                 return true;
             }
 
@@ -1530,7 +1531,91 @@
         return FRIEND_APPLY_ROUTE_TITLES.some(t => title.includes(t));
     }
 
+    function isLikelyFriendApplyContainer(root) {
+        if (!root || isOurUI(root)) return false;
+        const snippet = (root.innerText || '').replace(/\s+/g, ' ').slice(0, 600);
+        const hasApplyHint = FRIEND_APPLY_ROUTE_TITLES.some(t => snippet.includes(t))
+            || snippet.includes('验证消息') || snippet.includes('申请留言') || snippet.includes('朋友');
+        const hasInput = root.querySelector('textarea, input[type="text"], div[contenteditable="true"]');
+        const hasFinish = Array.from(root.querySelectorAll('button, .semi-button, [role="button"]'))
+            .some(el => !isOurUI(el) && (el.textContent || '').replace(/\s+/g, '').trim() === '完成');
+        return !!(hasInput && (hasApplyHint || hasFinish));
+    }
+
+    function findFriendApplyPopupRoots() {
+        const roots = [];
+        const seen = new Set();
+        const selectors = [
+            '.semi-modal-wrap .semi-modal-content',
+            '.semi-modal-content',
+            '.semi-modal-body',
+            '.modal-content',
+            '.popup-content',
+            '.wk-friendapply',
+            '.wk-friendapply-content-message',
+        ];
+        for (const sel of selectors) {
+            document.querySelectorAll(sel).forEach(el => {
+                if (seen.has(el) || isOurUI(el) || !isLikelyFriendApplyContainer(el)) return;
+                seen.add(el);
+                roots.push(el);
+            });
+        }
+        return roots.sort((a, b) => {
+            const za = parseInt(getComputedStyle(a.closest('.semi-modal-wrap') || a).zIndex, 10) || 0;
+            const zb = parseInt(getComputedStyle(b.closest('.semi-modal-wrap') || b).zIndex, 10) || 0;
+            if (zb !== za) return zb - za;
+            return (b.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING) ? 1 : -1;
+        });
+    }
+
+    function getFriendApplyPopupRoot() {
+        return findFriendApplyPopupRoots()[0] || null;
+    }
+
+    function isFriendApplyPopupOpen() {
+        return !!getFriendApplyPopupRoot();
+    }
+
+    /** 全页申请路由 或 点添加好友后弹出的新窗口 */
+    function isFriendApplyUiOpen() {
+        return isFriendApplyRouteOpen() || isFriendApplyPopupOpen();
+    }
+
+    function findRemarkInputInScope(scope) {
+        if (!scope) return null;
+        const selectors = [
+            'textarea.semi-textarea',
+            'textarea',
+            'input[type="text"]',
+            '.semi-input-textarea textarea',
+            '.semi-input textarea',
+            '.semi-input input',
+            'div[contenteditable="true"]',
+        ];
+        for (const sel of selectors) {
+            const el = scope.querySelector(sel);
+            if (el && !isOurUI(el) && isInputReady(el)) return el;
+        }
+        for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
+            if (isOurUI(el) || !isInputReady(el)) continue;
+            const ph = (el.getAttribute('placeholder') || '').toLowerCase();
+            if (ph.includes('验证') || ph.includes('留言') || ph.includes('申请') || ph.includes('备注') || ph.includes('朋友')) {
+                return el;
+            }
+        }
+        for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
+            if (!isOurUI(el) && isInputReady(el)) return el;
+        }
+        return null;
+    }
+
     function getFriendApplyRemarkInput() {
+        const popup = getFriendApplyPopupRoot();
+        if (popup) {
+            const inPopup = findRemarkInputInScope(popup);
+            if (inPopup) return inPopup;
+        }
         const selectors = [
             '.wk-friendapply-content-message textarea',
             '.wk-friendapply-content-message input[type="text"]',
@@ -1550,19 +1635,20 @@
             if (el && isInputReady(el)) return el;
         }
         const scope = document.querySelector('.wk-friendapply, .wk-friendapply-content-message');
-        if (scope) {
-            for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
-                if (isOurUI(el) || !isInputReady(el)) continue;
-                const ph = (el.getAttribute('placeholder') || '').toLowerCase();
-                if (ph.includes('验证') || ph.includes('留言') || ph.includes('申请') || ph.includes('备注') || ph.includes('朋友')) {
-                    return el;
-                }
-            }
-            for (const el of scope.querySelectorAll('textarea, input[type="text"], div[contenteditable="true"]')) {
-                if (!isOurUI(el) && isInputReady(el)) return el;
-            }
+        return findRemarkInputInScope(scope);
+    }
+
+    function getFriendApplyActionScope() {
+        const input = getFriendApplyRemarkInput();
+        if (input) {
+            const root = input.closest(
+                '.semi-modal-content, .semi-modal-body, .semi-modal-wrap, .wk-friendapply, .modal-content, .popup-content, [class*="modal"]'
+            );
+            if (root && !isOurUI(root)) return root;
         }
-        return null;
+        return getFriendApplyPopupRoot()
+            || document.querySelector('.wk-friendapply')
+            || null;
     }
 
     async function waitFriendApplyRemarkInput(maxMs) {
@@ -1590,6 +1676,7 @@
     function syncFriendApplyRemarkState(remark) {
         const input = getFriendApplyRemarkInput();
         const scopes = [
+            getFriendApplyPopupRoot(),
             document.querySelector('.wk-friendapply-content-message'),
             document.querySelector('.wk-friendapply'),
             input,
@@ -1685,7 +1772,10 @@
         const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
         if (!input) return false;
         setStatus(`填写验证消息…`);
-        await delay(PACE.friendApplySettleMs);
+        await delay(PACE.popupSettleMs);
+        try { input.click(); } catch (e) { /* ignore */ }
+        input.focus();
+        await delay(PACE.typingMs);
         await simulateTyping(input, text);
         await delay(PACE.remarkSettleMs);
         if (remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text)) {
@@ -1696,6 +1786,12 @@
     }
 
     function findFinishButton() {
+        const scope = getFriendApplyActionScope();
+        if (scope) {
+            const btn = Array.from(scope.querySelectorAll('button, .semi-button, [role="button"]'))
+                .find(el => !isOurUI(el) && (el.textContent || '').replace(/\s+/g, '').trim() === '完成');
+            if (btn) return btn;
+        }
         if (document.querySelector('.wk-friendapply')) {
             const headers = document.querySelectorAll('.wk-viewqueueheader');
             for (let i = headers.length - 1; i >= 0; i--) {
@@ -1716,6 +1812,7 @@
             const text = (btn.textContent || '').replace(/\s+/g, '').trim();
             if (text === '完成') return btn;
         }
+        if (!isFriendApplyUiOpen()) return null;
         return Array.from(document.querySelectorAll('button, .semi-button, [role="button"]'))
             .find(el => !isOurUI(el) && (el.textContent || '').replace(/\s+/g, '').trim() === '完成') || null;
     }
@@ -1751,14 +1848,17 @@
     }
 
     function isSubmitInProgress() {
-        return isFinishButtonLoading() || isFriendApplyRouteOpen() || isAddFriendModalOpen();
+        return isFinishButtonLoading() || isFriendApplyUiOpen() || isAddFriendModalOpen();
     }
 
-    async function clickFinishButton(maxWait) {
+    async function clickFinishButton(maxWait, expectedRemark) {
         const endAt = Date.now() + (maxWait || PACE.confirmWaitMs + 2000);
         while (Date.now() < endAt) {
             const btn = findFinishButton();
             if (btn && isFinishButtonEnabled(btn)) {
+                if (expectedRemark && !(await waitUntilRemarkFilled(expectedRemark, PACE.remarkFillWaitMs))) {
+                    return false;
+                }
                 await delay(PACE.remarkBeforeCompleteMs);
                 const props = getReactProps(btn);
                 try {
@@ -1769,7 +1869,7 @@
                 }
                 await delay(PACE.confirmClickMs);
                 for (let i = 0; i < 10; i++) {
-                    if (isFinishButtonLoading() || !isFriendApplyRouteOpen()) return true;
+                    if (isFinishButtonLoading() || !isFriendApplyUiOpen()) return true;
                     await delay(PACE.pollFastMs);
                 }
                 return true;
@@ -1792,7 +1892,7 @@
             if (detectRateLimit()) return false;
 
             const loading = isFinishButtonLoading();
-            const onApply = isFriendApplyRouteOpen();
+            const onApply = isFriendApplyUiOpen();
             const modalOpen = isAddFriendModalOpen();
             if (loading) sawLoading = true;
 
@@ -1815,48 +1915,32 @@
     }
 
     function findRemarkInputSync() {
-        const friendApplyInput = getFriendApplyRemarkInput();
-        if (friendApplyInput && isInputReady(friendApplyInput)) return friendApplyInput;
-
-        const container = document.querySelector('.semi-modal-content, .modal-content, .popup-content') || document.body;
-        const textarea = container.querySelector('textarea.semi-textarea, textarea');
-        if (textarea) return textarea;
-
-        const inputs = container.querySelectorAll('input[type="text"]');
-        for (const inp of inputs) {
-            const ph = (inp.getAttribute('placeholder') || '').toLowerCase();
-            if (ph.includes('备注') || ph.includes('留言') || ph.includes('验证')) return inp;
-        }
-
-        return container.querySelector('div[contenteditable="true"]') || null;
+        return getFriendApplyRemarkInput();
     }
 
     function isAddFriendModalOpen() {
-        const modal = document.querySelector('.semi-modal-content, .modal-content, .popup-content');
-        if (!modal) return false;
-        return Array.from(modal.querySelectorAll('button, div[role="button"]'))
-            .some(el => !isOurUI(el) && ['完成', '确定', '确认'].some(k => (el.innerText || '').includes(k)));
+        return isFriendApplyPopupOpen();
     }
 
     async function waitForRemarkInput(phone) {
-        await delay(PACE.friendApplySettleMs);
-        const endAt = Date.now() + Math.max(PACE.actionWaitMs, PACE.friendApplyWaitMs);
+        await delay(PACE.popupSettleMs);
+        const endAt = Date.now() + Math.max(PACE.actionWaitMs, PACE.friendApplyWaitMs + PACE.popupSettleMs);
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound();
             if (blocked) return blocked;
             if (findExistingFriendPanel()) {
                 return await handleAlreadyFriend(phone, false);
             }
-            if (isFriendApplyRouteOpen()) {
-                const applyInput = await waitInputStable(getFriendApplyRemarkInput, 700, PACE.friendApplyWaitMs);
+            if (isFriendApplyUiOpen()) {
+                const applyInput = await waitInputStable(getFriendApplyRemarkInput, 900, PACE.friendApplyWaitMs);
                 if (applyInput) {
-                    await delay(PACE.friendApplySettleMs);
+                    await delay(PACE.popupSettleMs);
                     return applyInput;
                 }
             }
             const input = findRemarkInputSync();
             if (input && isInputReady(input)) {
-                await delay(PACE.friendApplySettleMs);
+                await delay(PACE.popupSettleMs);
                 return input;
             }
             await delay(PACE.pollFastMs);
@@ -1865,11 +1949,7 @@
     }
 
     async function fillRemarkInput(input, msg) {
-        if (isFriendApplyRouteOpen() || input?.closest?.('.wk-friendapply')) {
-            return fillFriendApplyRemark(msg);
-        }
-        await typeIntoApplyRemark(input, msg);
-        return waitUntilRemarkFilled(msg, PACE.remarkFillWaitMs);
+        return fillFriendApplyRemark(msg);
     }
 
     async function checkRemarkFilled(input, expected) {
@@ -1921,7 +2001,7 @@
             return 'success';
         }
 
-        if (inFlightPhone && inFlightPhone !== phone && (isSubmitInProgress() || isFriendApplyRouteOpen())) {
+        if (inFlightPhone && inFlightPhone !== phone && (isSubmitInProgress() || isFriendApplyUiOpen())) {
             setStatus(`等待 ${inFlightPhone} 提交完成…`);
             await waitSubmitComplete(inFlightPhone);
         }
@@ -1980,14 +2060,8 @@
 
         const msg = talkList[talkIndex++ % talkList.length];
         setStatus(`填写验证消息: ${msg.length > 18 ? msg.slice(0, 18) + '…' : msg}`);
-        let filled = false;
-        if (isFriendApplyRouteOpen()) {
-            await delay(PACE.friendApplySettleMs);
-            filled = await fillFriendApplyRemark(msg);
-        } else {
-            await delay(PACE.friendApplySettleMs);
-            filled = await fillRemarkInput(remarkResult, msg);
-        }
+        await delay(PACE.popupSettleMs);
+        const filled = await fillFriendApplyRemark(msg);
         if (!filled) {
             setStatus(`验证消息未填入，重试: ${phone}`);
             return 'retry';
@@ -1999,12 +2073,7 @@
         }
         await delay(PACE.remarkBeforeCompleteMs);
 
-        let confirmed = false;
-        if (isFriendApplyRouteOpen()) {
-            confirmed = await clickFinishButton(PACE.friendApplyWaitMs);
-        } else {
-            confirmed = await clickConfirmComplete();
-        }
+        const confirmed = await clickFinishButton(PACE.friendApplyWaitMs, msg);
         if (!confirmed) {
             setStatus(`未找到「完成」按钮，重试: ${phone}`);
             return 'retry';
