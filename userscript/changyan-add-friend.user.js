@@ -1,12 +1,18 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.2.0
-// @description  畅言加好友，去掉阻塞依赖+强制显示面板
-// @match        *://web.rvtqh.com/*
+// @version      10.2.1
+// @description  畅言加好友，GM注入面板+本地可装
+// @match        *://web.rvtqh.com*
 // @match        *://*.rvtqh.com/*
-// @grant        none
-// @run-at       document-idle
+// @match        http://web.rvtqh.com/*
+// @match        https://web.rvtqh.com/*
+// @grant        GM.addElement
+// @grant        GM.setValue
+// @grant        GM.getValue
+// @inject-into  page
+// @run-at       document-start
+// @connect      *
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
 // @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
 // @downloadURL  https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js
@@ -15,43 +21,75 @@
 (function () {
     'use strict';
 
-    const CY_BOOT_VERSION = '10.2.0';
+    const CY_BOOT_VERSION = '10.2.1';
 
-    /** 脚本一加载就先挂按钮，避免后面逻辑报错导致完全没界面 */
-    function cyEmergencyBootstrap() {
+    function cyAppendToPage(el) {
+        const root = document.body || document.documentElement;
+        if (!root) return false;
         try {
-            const mount = () => {
-                const root = document.body || document.documentElement;
-                if (!root || document.getElementById('cy-mini-btn')) return;
-                const btn = document.createElement('button');
-                btn.id = 'cy-mini-btn';
-                btn.type = 'button';
-                btn.title = `畅言加好友 v${CY_BOOT_VERSION} · 点击打开`;
-                btn.innerHTML = '<span style="font-size:13px;font-weight:800;line-height:1">畅言</span><span style="font-size:8px;margin-top:2px">阿陌</span>';
-                btn.style.cssText =
-                    'position:fixed;left:12px;bottom:72px;z-index:2147483647;width:54px;height:54px;' +
-                    'border-radius:50%;border:none;background:linear-gradient(145deg,#93c5fd,#0ea5e9);' +
-                    'color:#fff;cursor:pointer;display:flex;flex-direction:column;align-items:center;' +
-                    'justify-content:center;box-shadow:0 10px 26px rgba(14,165,233,0.4);padding:0;';
-                btn.onclick = () => {
-                    const panel = document.getElementById('cy-add-friend-panel');
-                    if (panel) {
-                        panel.classList.remove('cy-minimized');
-                        panel.style.display = '';
-                        return;
-                    }
-                    if (typeof window.__cyRestorePanel === 'function') window.__cyRestorePanel();
-                };
-                root.appendChild(btn);
-            };
-            mount();
-            if (!document.body) {
-                document.addEventListener('DOMContentLoaded', mount, { once: true });
+            if (typeof GM !== 'undefined' && GM.addElement) {
+                const attrs = { parentNode: root, id: el.id };
+                if (el.innerHTML) attrs.innerHTML = el.innerHTML;
+                else if (el.textContent) attrs.textContent = el.textContent;
+                if (el.title) attrs.title = el.title;
+                if (el.getAttribute('style')) attrs.style = el.getAttribute('style');
+                if (el.className) attrs.className = el.className;
+                GM.addElement(el.tagName.toLowerCase(), attrs);
+                return true;
             }
-            setInterval(mount, 1500);
-        } catch (e) {
-            console.warn('[畅言加好友] bootstrap 失败', e);
-        }
+        } catch (e) { /* fallback */ }
+        root.appendChild(el);
+        return true;
+    }
+
+    /** 脚本一加载：红色标记 + 左下角按钮，确认脚本已运行 */
+    function cyEmergencyBootstrap() {
+        const mount = () => {
+            try {
+                const root = document.body || document.documentElement;
+                if (!root) return;
+
+                if (!document.getElementById('cy-loaded-ping')) {
+                    const ping = document.createElement('div');
+                    ping.id = 'cy-loaded-ping';
+                    ping.textContent = `畅言脚本 v${CY_BOOT_VERSION} 已加载`;
+                    ping.title = '点击打开加好友面板';
+                    ping.style.cssText =
+                        'position:fixed;top:10px;left:10px;z-index:2147483647;background:#dc2626;color:#fff;' +
+                        'padding:8px 14px;border-radius:10px;font:700 13px/1.4 "Microsoft YaHei",sans-serif;' +
+                        'cursor:pointer;box-shadow:0 8px 24px rgba(220,38,38,0.45);user-select:none;';
+                    ping.onclick = () => {
+                        if (typeof window.__cyRestorePanel === 'function') window.__cyRestorePanel();
+                        else {
+                            const p = document.getElementById('cy-add-friend-panel');
+                            if (p) { p.classList.remove('cy-minimized'); p.style.display = ''; }
+                        }
+                    };
+                    cyAppendToPage(ping);
+                }
+
+                if (!document.getElementById('cy-mini-btn')) {
+                    const btn = document.createElement('button');
+                    btn.id = 'cy-mini-btn';
+                    btn.type = 'button';
+                    btn.title = `畅言加好友 v${CY_BOOT_VERSION} · 点击打开`;
+                    btn.innerHTML = '<span style="font-size:13px;font-weight:800;line-height:1">畅言</span><span style="font-size:8px;margin-top:2px">阿陌</span>';
+                    btn.style.cssText =
+                        'position:fixed;left:12px;bottom:72px;z-index:2147483647;width:54px;height:54px;' +
+                        'border-radius:50%;border:none;background:linear-gradient(145deg,#93c5fd,#0ea5e9);' +
+                        'color:#fff;cursor:pointer;display:flex;flex-direction:column;align-items:center;' +
+                        'justify-content:center;box-shadow:0 10px 26px rgba(14,165,233,0.4);padding:0;';
+                    btn.onclick = ping.onclick;
+                    cyAppendToPage(btn);
+                }
+            } catch (e) {
+                console.error('[畅言加好友] bootstrap 失败', e);
+            }
+        };
+        mount();
+        document.addEventListener('DOMContentLoaded', mount, { once: true });
+        window.addEventListener('load', mount, { once: true });
+        setInterval(mount, 1000);
     }
     cyEmergencyBootstrap();
 
