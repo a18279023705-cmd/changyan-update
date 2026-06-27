@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.11
-// @description  畅言加好友阿陌专用，每次添加只模拟回车一次
+// @version      9.20.12
+// @description  畅言加好友阿陌专用，搜索仅模拟回车一次
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -1195,35 +1195,6 @@
         return isSearchInputFilled(input, keyword);
     }
 
-    function findSearchTriggerButton(input) {
-        if (!input) return null;
-        const scopes = [
-            input.closest('.wk-search-input'),
-            input.closest('.semi-input-wrapper'),
-            input.closest('.semi-input'),
-            input.closest('.wk-friendadd'),
-            input.parentElement,
-        ].filter(Boolean);
-        for (const scope of scopes) {
-            for (const sel of [
-                '.semi-input-prefix svg',
-                '.semi-input-suffix svg',
-                '.wk-search-input-icon',
-                '.wk-search-input-icon svg',
-                '[class*="search-icon"]',
-                '[class*="SearchIcon"]',
-            ]) {
-                for (const node of scope.querySelectorAll(sel)) {
-                    if (isOurUI(node)) continue;
-                    const r = node.getBoundingClientRect();
-                    if (r.width < 4 || r.height < 4) continue;
-                    return node.closest('button, [role="button"]') || node;
-                }
-            }
-        }
-        return null;
-    }
-
     function callInputEnterPress(input, keyword) {
         const value = String(keyword || getSearchInputDisplayValue(input) || '').trim();
         const ev = {
@@ -1255,7 +1226,7 @@
         }));
     }
 
-    /** 每次 addFriendAttempt 只触发一次搜索（onEnterPress → 搜索图标 → searchUser → keydown） */
+    /** 每次 addFriendAttempt 只模拟回车一次（onEnterPress 或 keydown） */
     async function triggerSearchEnter(input, keyword) {
         if (searchEnterUsedThisAttempt) return true;
 
@@ -1265,42 +1236,12 @@
         input.focus();
         await delay(PACE.typingMs);
 
-        if (callInputEnterPress(input, value)) {
-            searchEnterUsedThisAttempt = true;
-            setStatus(`回车搜索: ${value}`);
-            await delay(450);
-            return true;
-        }
-
-        const searchBtn = findSearchTriggerButton(input);
-        if (searchBtn) {
-            searchEnterUsedThisAttempt = true;
-            setStatus(`点击搜索: ${value}`);
-            await humanClick(searchBtn);
-            await delay(450);
-            return true;
-        }
-
-        const friendAdd = findFriendAddInstance();
-        if (friendAdd) {
-            searchEnterUsedThisAttempt = true;
-            setStatus(`搜索用户: ${value}`);
-            await new Promise(resolve => {
-                try {
-                    friendAdd.setState({ keyword: value }, () => {
-                        Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
-                    });
-                } catch (e) {
-                    resolve();
-                }
-            });
-            await delay(450);
-            return true;
-        }
-
         searchEnterUsedThisAttempt = true;
         setStatus(`回车搜索: ${value}`);
-        await dispatchEnterKey(input);
+
+        if (!callInputEnterPress(input, value)) {
+            await dispatchEnterKey(input);
+        }
         await delay(450);
         return true;
     }
