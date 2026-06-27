@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.2
-// @description  畅言加好友阿陌专用，话术填好确认后再点完成
+// @version      10.1.3
+// @description  畅言加好友阿陌专用，两弹窗慢等+话术确认后再完成
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -51,26 +51,33 @@
         afterSkipMs: 400,
         afterRetryMs: 900,
         searchWaitMs: 520,
-        searchProfileWaitMs: 10000,
-        actionWaitMs: 700,
-        friendApplyWaitMs: 4500,
-        actionSettleMs: 360,
-        confirmWaitMs: 580,
-        submitSettleMinMs: 1000,
-        submitWaitMs: 16000,
-        confirmSettleMs: 320,
-        panelCloseMs: 500,
-        panelCloseMinMs: 350,
-        panelCloseRetryMs: 450,
-        remarkCheckMs: 350,
-        remarkSettleMs: 800,
-        remarkFillWaitMs: 8000,
-        remarkBeforeCompleteMs: 900,
-        confirmClickMs: 450,
-        typingMs: 90,
-        typingAfterMs: 140,
-        pollFastMs: 220,
-        pollNormalMs: 280,
+        searchProfileWaitMs: 12000,
+        actionWaitMs: 900,
+        friendApplyWaitMs: 8000,
+        actionSettleMs: 500,
+        /** 弹窗1：搜索结果/资料页出现后再点「添加好友」 */
+        profilePanelSettleMs: 2000,
+        /** 弹窗1→2：点「添加好友」后等申请页弹出 */
+        afterAddFriendClickMs: 2500,
+        /** 弹窗2：申请页完全打开后再填话术、点完成 */
+        friendApplySettleMs: 2800,
+        confirmWaitMs: 800,
+        submitSettleMinMs: 1200,
+        submitWaitMs: 18000,
+        confirmSettleMs: 450,
+        panelCloseMs: 600,
+        panelCloseMinMs: 450,
+        panelCloseRetryMs: 550,
+        remarkCheckMs: 500,
+        remarkSettleMs: 1200,
+        remarkFillWaitMs: 12000,
+        remarkBeforeCompleteMs: 2000,
+        remarkFillRetries: 3,
+        confirmClickMs: 600,
+        typingMs: 120,
+        typingAfterMs: 200,
+        pollFastMs: 250,
+        pollNormalMs: 320,
     };
 
     const STORAGE_KEY = 'changyan_add_friend_talks';
@@ -326,6 +333,7 @@
         const input = getFriendApplyRemarkInput();
         if (input && talkList.length) {
             const msg = talkList[talkIndex % talkList.length];
+            await delay(PACE.friendApplySettleMs);
             if (!remarkValueMatches(readRemarkValue(input), msg)) {
                 await fillFriendApplyRemark(msg);
             }
@@ -1143,30 +1151,74 @@
         return findTextTargetInRoot(document.body, ['添加好友'], { exact: true });
     }
 
+    async function waitInputStable(getInput, stableMs, maxMs) {
+        const endAt = Date.now() + (maxMs || PACE.friendApplyWaitMs);
+        let last = null;
+        let stableSince = 0;
+        while (Date.now() < endAt) {
+            const input = getInput();
+            if (input && isInputReady(input)) {
+                if (input === last) {
+                    if (Date.now() - stableSince >= (stableMs || 600)) return input;
+                } else {
+                    last = input;
+                    stableSince = Date.now();
+                }
+            } else {
+                last = null;
+                stableSince = 0;
+            }
+            await delay(PACE.pollFastMs);
+        }
+        const input = getInput();
+        return input && isInputReady(input) ? input : null;
+    }
+
+    async function waitFriendApplyDialogReady(phone) {
+        setStatus(`等待申请页加载: ${phone}`);
+        const endAt = Date.now() + PACE.friendApplyWaitMs;
+        while (Date.now() < endAt) {
+            if (isFriendApplyRouteOpen()) {
+                const input = await waitInputStable(getFriendApplyRemarkInput, 700, PACE.friendApplyWaitMs);
+                if (input) {
+                    await delay(PACE.friendApplySettleMs);
+                    return input;
+                }
+            }
+            if (detectRateLimit()) return 'rate_limit';
+            await delay(PACE.pollFastMs);
+        }
+        return null;
+    }
     async function clickAddFriendButton(phone) {
         const endAt = Date.now() + PACE.searchProfileWaitMs;
         while (Date.now() < endAt) {
-            if (isFriendApplyRouteOpen()) return true;
+            if (isFriendApplyRouteOpen()) {
+                await delay(PACE.friendApplySettleMs);
+                return true;
+            }
 
             const target = findAddFriendButton();
             if (target) {
+                setStatus(`等待资料页: ${phone}`);
+                await delay(PACE.profilePanelSettleMs);
                 setStatus(`点击添加好友: ${phone}`);
                 await humanClick(target);
-                await delay(PACE.actionSettleMs);
+                await delay(PACE.afterAddFriendClickMs);
 
-                const verifyEnd = Date.now() + PACE.friendApplyWaitMs;
-                while (Date.now() < verifyEnd) {
-                    if (isFriendApplyRouteOpen()) return true;
-                    if (detectRateLimit()) return 'rate_limit';
-                    await delay(PACE.pollFastMs);
-                }
+                const ready = await waitFriendApplyDialogReady(phone);
+                if (ready === 'rate_limit') return 'rate_limit';
+                if (ready) return true;
 
                 const retryTarget = findAddFriendButton();
                 if (retryTarget) {
                     setStatus(`再次点击添加好友: ${phone}`);
-                    await humanClick(retryTarget);
                     await delay(PACE.actionSettleMs);
-                    if (isFriendApplyRouteOpen()) return true;
+                    await humanClick(retryTarget);
+                    await delay(PACE.afterAddFriendClickMs);
+                    const retryReady = await waitFriendApplyDialogReady(phone);
+                    if (retryReady === 'rate_limit') return 'rate_limit';
+                    if (retryReady) return true;
                 }
                 return false;
             }
@@ -1270,13 +1322,21 @@
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound({ searchPhase: true });
             if (blocked) return blocked;
-            if (findAddFriendButton()) return null;
+            if (findAddFriendButton()) {
+                setStatus(`等待资料页加载: ${phone}`);
+                await delay(PACE.profilePanelSettleMs);
+                return null;
+            }
             if (findExistingFriendPanel()) {
                 return await handleAlreadyFriend(phone, false);
             }
             await delay(PACE.pollFastMs);
         }
-        if (findAddFriendButton()) return null;
+            if (findAddFriendButton()) {
+                setStatus(`等待资料页加载: ${phone}`);
+                await delay(PACE.profilePanelSettleMs);
+                return null;
+            }
         if (findExistingFriendPanel()) {
             return await handleAlreadyFriend(phone, waitFriendPanel);
         }
@@ -1295,7 +1355,11 @@
     }
 
     function findExistingFriendPanel() {
-        if (findAddFriendButton()) return null;
+            if (findAddFriendButton()) {
+                setStatus(`等待资料页加载: ${phone}`);
+                await delay(PACE.profilePanelSettleMs);
+                return null;
+            }
 
         const sendBtns = Array.from(document.querySelectorAll('button, div[role="button"], a'))
             .filter(el => {
@@ -1559,7 +1623,7 @@
                 bubbles: true, cancelable: true, data: ch, inputType: 'insertText',
             }));
             syncReactInputValue(input, next);
-            await delay(35);
+            await delay(70);
         }
         syncFriendApplyRemarkState(text);
         await delay(PACE.remarkCheckMs);
@@ -1580,12 +1644,27 @@
     }
 
     async function fillFriendApplyRemark(remark) {
-        const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
-        if (!input) return false;
-        setStatus(`填写验证消息…`);
-        if (await typeIntoApplyRemark(input, remark)) return true;
-        await delay(PACE.remarkSettleMs);
-        return waitUntilRemarkFilled(remark, PACE.remarkFillWaitMs);
+        const text = String(remark || '').trim();
+        if (!text) return false;
+        const attempts = PACE.remarkFillRetries || 3;
+        for (let i = 1; i <= attempts; i++) {
+            const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
+            if (!input) {
+                await delay(PACE.remarkSettleMs);
+                continue;
+            }
+            setStatus(i > 1 ? `重填验证消息 (${i}/${attempts})…` : `填写验证消息…`);
+            await delay(PACE.friendApplySettleMs);
+            await simulateTyping(input, text);
+            await delay(PACE.remarkSettleMs);
+            if (remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text)) {
+                return true;
+            }
+            if (await typeIntoApplyRemark(input, text)) return true;
+            await delay(PACE.remarkSettleMs);
+            if (await waitUntilRemarkFilled(text, 2500)) return true;
+        }
+        return waitUntilRemarkFilled(text, PACE.remarkFillWaitMs);
     }
 
     function findFinishButton() {
@@ -1652,7 +1731,7 @@
         while (Date.now() < endAt) {
             const btn = findFinishButton();
             if (btn && isFinishButtonEnabled(btn)) {
-                await delay(PACE.remarkSettleMs);
+                await delay(PACE.remarkBeforeCompleteMs);
                 const props = getReactProps(btn);
                 try {
                     if (props?.onClick) props.onClick({});
@@ -1732,7 +1811,7 @@
     }
 
     async function waitForRemarkInput(phone) {
-        await delay(PACE.actionSettleMs);
+        await delay(PACE.friendApplySettleMs);
         const endAt = Date.now() + Math.max(PACE.actionWaitMs, PACE.friendApplyWaitMs);
         while (Date.now() < endAt) {
             const blocked = checkRateLimitOrNotFound();
@@ -1741,11 +1820,17 @@
                 return await handleAlreadyFriend(phone, false);
             }
             if (isFriendApplyRouteOpen()) {
-                const applyInput = getFriendApplyRemarkInput();
-                if (applyInput && isInputReady(applyInput)) return applyInput;
+                const applyInput = await waitInputStable(getFriendApplyRemarkInput, 700, PACE.friendApplyWaitMs);
+                if (applyInput) {
+                    await delay(PACE.friendApplySettleMs);
+                    return applyInput;
+                }
             }
             const input = findRemarkInputSync();
-            if (input && isInputReady(input)) return input;
+            if (input && isInputReady(input)) {
+                await delay(PACE.friendApplySettleMs);
+                return input;
+            }
             await delay(PACE.pollFastMs);
         }
         return null;
@@ -1769,6 +1854,7 @@
 
     async function clickConfirmComplete() {
         try {
+            await delay(PACE.remarkBeforeCompleteMs);
             const modal = document.querySelector('.semi-modal-content, .modal-content, .popup-content');
             const root = modal || document.body;
             const keywords = ['完成', '确定', '确认'];
@@ -1867,9 +1953,10 @@
         setStatus(`填写验证消息: ${msg.length > 18 ? msg.slice(0, 18) + '…' : msg}`);
         let filled = false;
         if (isFriendApplyRouteOpen()) {
-            await delay(450);
+            await delay(PACE.friendApplySettleMs);
             filled = await fillFriendApplyRemark(msg);
         } else {
+            await delay(PACE.friendApplySettleMs);
             filled = await fillRemarkInput(remarkResult, msg);
         }
         if (!filled) {
