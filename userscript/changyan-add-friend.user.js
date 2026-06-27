@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.18
-// @description  畅言加好友阿陌专用，填号后只模拟回车搜索
+// @version      10.0.0
+// @description  畅言加好友阿陌专用，v2.3填号回车逻辑+面板频繁限制
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -1139,71 +1139,67 @@
         return getFriendAddSearchInput() === input;
     }
 
-    /** React 受控输入框：DOM value 有值但界面可能仍为空，需读 props.value */
-    function getSearchInputDisplayValue(input) {
-        if (!input) return '';
-        let el = input;
-        for (let i = 0; i < 10 && el; i++) {
-            const props = getReactProps(el);
-            if (props?.value !== undefined && props.value !== null) {
-                return String(props.value).trim();
-            }
-            el = el.parentElement;
-        }
-        return readInputValue(input);
+    function getNativeValueSetter(input) {
+        const tag = (input?.tagName || '').toLowerCase();
+        const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        return Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     }
 
-    function isSearchInputFilled(input, phone) {
-        const expected = String(phone || '').trim();
-        if (!expected) return false;
-        if (getSearchInputDisplayValue(input) === expected) return true;
-        if (readInputValue(input) === expected) return true;
-        return false;
-    }
+    /** v2.3 逻辑：填值 + 模拟回车搜索（只触发一次） */
+    async function simulateTypingSearch(input, value) {
+        if (searchEnterUsedThisAttempt) return true;
+        const text = String(value || '').trim();
+        if (!text || !input) return false;
 
-    async function fillSearchInput(input, phone) {
-        const keyword = String(phone || '').trim();
-        if (!keyword) return false;
         input.focus();
-        await delay(PACE.typingMs);
-        if (!isSearchInputFilled(input, keyword)) {
-            setInputValue(input, keyword);
-            await delay(PACE.typingMs);
+        const setter = getNativeValueSetter(input);
+        if (setter) {
+            setter.call(input, '');
+            setter.call(input, text);
+        } else {
+            input.value = text;
         }
-        return isSearchInputFilled(input, keyword);
-    }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await delay(120);
 
-    /** 只模拟按一次回车，不做其它触发 */
-    async function simulateEnterOnce(input) {
-        if (searchEnterUsedThisAttempt) return;
-        input.focus();
-        await delay(100);
-        const opts = {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-            bubbles: true, cancelable: true, composed: true, view: window,
-        };
-        input.dispatchEvent(new KeyboardEvent('keydown', opts));
-        input.dispatchEvent(new KeyboardEvent('keypress', opts));
-        input.dispatchEvent(new KeyboardEvent('keyup', opts));
+        ['keydown', 'keypress', 'keyup'].forEach(type => {
+            input.dispatchEvent(new KeyboardEvent(type, {
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true,
+            }));
+        });
         searchEnterUsedThisAttempt = true;
+        setStatus(`回车搜索: ${text}`);
+        await delay(500);
+        return true;
+    }
+
+    /** v2.3 逻辑：填备注/话术（不回车） */
+    async function simulateTyping(input, value) {
+        if (!input) return;
+        const text = String(value || '');
+        input.focus();
+        if (input.tagName.toLowerCase() === 'div') {
+            document.execCommand('selectAll');
+            document.execCommand('delete');
+            input.textContent = text;
+            input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+        } else {
+            const setter = getNativeValueSetter(input);
+            if (setter) {
+                setter.call(input, '');
+                setter.call(input, text);
+            } else {
+                input.value = text;
+            }
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        await delay(120);
     }
 
     async function submitSearch(input, phone) {
         const keyword = String(phone || '').trim();
         if (!keyword) return false;
-
-        const current = readInputValue(input);
-        if (current && current !== keyword) clearSearchInput(input);
-
-        if (!(await fillSearchInput(input, keyword))) {
-            setStatus(`搜索框未能填入: ${keyword}`);
-            return false;
-        }
-
-        setStatus(`回车搜索: ${keyword}`);
-        await simulateEnterOnce(input);
-        await delay(1200);
-        return true;
+        return simulateTypingSearch(input, keyword);
     }
 
     function normalizeUiText(el) {
@@ -1242,7 +1238,7 @@
         return best;
     }
 
-    function normalizeUiText(el) {
+    async function humanClick(el) {
         if (!el) return false;
         try { el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' }); } catch (e) {
             try { el.scrollIntoView(); } catch (e2) {}
@@ -1889,9 +1885,7 @@
         if (isFriendApplyRouteOpen() || input?.closest?.('.wk-friendapply')) {
             return fillFriendApplyRemark(msg);
         }
-        input.focus();
-        await delay(PACE.typingMs);
-        await typeIntoApplyRemark(input, msg);
+        await simulateTyping(input, msg);
         return remarkValueMatches(readRemarkValue(input), msg);
     }
 
@@ -2161,7 +2155,7 @@
                 setStatus(`${failHint}，重试当前号: ${phone}`);
                 await dismissOverlaySafely();
                 const inp = findSearchInput();
-                const cur = inp ? (getSearchInputDisplayValue(inp) || readInputValue(inp)) : '';
+                const cur = inp ? readInputValue(inp) : '';
                 if (cur !== phone) clearSearchInput(inp);
                 await delay(PACE.afterRetryMs);
             }
