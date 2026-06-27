@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.5
+// @version      10.1.6
 // @description  畅言加好友阿陌专用，离开添加页自动让出、回来继续
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
@@ -392,7 +392,7 @@
         launch();
 
         while (true) {
-            await waitUntilTabActive();
+            await waitUntilAddFriendReady();
             if (stopRequested) return 'retry';
 
             const raced = await Promise.race([
@@ -1913,7 +1913,8 @@
      * retry        → 未完成添加，清弹窗后重试当前号
      */
     async function addFriendAttempt(phone) {
-        await waitUntilTabActive();
+        await waitUntilAddFriendReady();
+        if (stopRequested) return 'retry';
 
         if (isSessionDone(phone)) {
             clearInFlightPhone();
@@ -2081,7 +2082,8 @@
             const phone = phoneList[phoneIndex];
             updateStats();
 
-            await waitUntilTabActive();
+            await waitUntilAddFriendReady();
+            if (stopRequested) break;
 
             if (isSessionDone(phone)) {
                 phoneIndex++;
