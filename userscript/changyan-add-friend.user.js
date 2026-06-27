@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.10
-// @description  畅言加好友阿陌专用，修复号码已填入但未模拟回车搜索
+// @version      9.20.11
+// @description  畅言加好友阿陌专用，每次添加只模拟回车一次
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -101,6 +101,8 @@
     let lastProgressKey = '';
     let inFlightPhone = '';
     let sessionDoneKeys = new Set();
+    /** 单次 addFriendAttempt 内是否已触发过搜索回车 */
+    let searchEnterUsedThisAttempt = false;
 
     const RATE_LIMIT_HINTS = [
         '请不要频繁点击',
@@ -1237,7 +1239,6 @@
             const props = getReactProps(el);
             if (props?.onEnterPress) {
                 try { props.onEnterPress(ev); return true; } catch (e) { /* ignore */ }
-                try { props.onEnterPress(); return true; } catch (e) { /* ignore */ }
             }
             el = el.parentElement;
         }
@@ -1248,17 +1249,16 @@
         if (!input) return;
         input.focus();
         await delay(60);
-        const opts = {
+        input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
             bubbles: true, cancelable: true, view: window,
-        };
-        input.dispatchEvent(new KeyboardEvent('keydown', opts));
-        input.dispatchEvent(new KeyboardEvent('keypress', opts));
-        input.dispatchEvent(new KeyboardEvent('keyup', opts));
+        }));
     }
 
-    /** 号码已填入后，只触发一次搜索（优先 onEnterPress） */
+    /** 每次 addFriendAttempt 只触发一次搜索（onEnterPress → 搜索图标 → searchUser → keydown） */
     async function triggerSearchEnter(input, keyword) {
+        if (searchEnterUsedThisAttempt) return true;
+
         const value = String(keyword || getSearchInputDisplayValue(input) || '').trim();
         if (!value) return false;
 
@@ -1266,6 +1266,7 @@
         await delay(PACE.typingMs);
 
         if (callInputEnterPress(input, value)) {
+            searchEnterUsedThisAttempt = true;
             setStatus(`回车搜索: ${value}`);
             await delay(450);
             return true;
@@ -1273,6 +1274,7 @@
 
         const searchBtn = findSearchTriggerButton(input);
         if (searchBtn) {
+            searchEnterUsedThisAttempt = true;
             setStatus(`点击搜索: ${value}`);
             await humanClick(searchBtn);
             await delay(450);
@@ -1281,6 +1283,7 @@
 
         const friendAdd = findFriendAddInstance();
         if (friendAdd) {
+            searchEnterUsedThisAttempt = true;
             setStatus(`搜索用户: ${value}`);
             await new Promise(resolve => {
                 try {
@@ -1295,41 +1298,40 @@
             return true;
         }
 
+        searchEnterUsedThisAttempt = true;
         setStatus(`回车搜索: ${value}`);
         await dispatchEnterKey(input);
         await delay(450);
         return true;
     }
 
-    async function triggerFriendAddSearchOnce(input, keyword) {
-        return triggerSearchEnter(input, keyword);
-    }
-
     async function submitSearch(input, phone) {
         const keyword = String(phone || '').trim();
         if (!keyword) return false;
 
-        if (isFriendAddSearchInput(input)) {
-            const filled = await fillFriendAddSearchInput(input, keyword);
-            if (!filled) {
-                setStatus(`搜索框未能填入: ${keyword}`);
-                return false;
+        if (!isSearchInputFilled(input, keyword)) {
+            const current = getSearchInputDisplayValue(input);
+            if (current && current !== keyword) clearSearchInput(input);
+
+            if (isFriendAddSearchInput(input)) {
+                if (!(await fillFriendAddSearchInput(input, keyword))) {
+                    setStatus(`搜索框未能填入: ${keyword}`);
+                    return false;
+                }
+            } else {
+                input.focus();
+                await delay(PACE.typingMs);
+                setInputValue(input, keyword);
+                await delay(PACE.typingMs);
+                if (!isSearchInputFilled(input, keyword)) {
+                    setStatus(`搜索框未能填入: ${keyword}`);
+                    return false;
+                }
             }
-            await triggerSearchEnter(input, keyword);
-            await delay(1200);
-            return true;
         }
 
-        input.focus();
-        await delay(PACE.typingMs);
-        setInputValue(input, keyword);
-        await delay(PACE.typingMs);
-        if (!isSearchInputFilled(input, keyword)) {
-            setStatus(`搜索框未能填入: ${keyword}`);
-            return false;
-        }
         await triggerSearchEnter(input, keyword);
-        await delay(PACE.typingAfterMs);
+        await delay(1200);
         return true;
     }
 
@@ -2057,30 +2059,15 @@
         }
 
         setInFlightPhone(phone);
+        searchEnterUsedThisAttempt = false;
 
         const input = findSearchInput() || await waitForSelector(SEARCH_INPUT_SEL);
         if (!input) return 'retry';
         cachedSearchInput = input;
 
-        const current = getSearchInputDisplayValue(input);
-        let outcome;
-        if (isSearchInputFilled(input, phone)) {
-            if (!findAddFriendButton() && !isFriendApplyRouteOpen()) {
-                await triggerSearchEnter(input, phone);
-                invalidateVisibleTextCache();
-            }
-            outcome = await waitSearchOutcome(phone, true);
-            if (!outcome && !findAddFriendButton() && !isFriendApplyRouteOpen()) {
-                if (!(await submitSearch(input, phone))) return 'retry';
-                invalidateVisibleTextCache();
-                outcome = await waitSearchOutcome(phone, true);
-            }
-        } else {
-            if (current) clearSearchInput(input);
-            if (!(await submitSearch(input, phone))) return 'retry';
-            invalidateVisibleTextCache();
-            outcome = await waitSearchOutcome(phone, true);
-        }
+        if (!(await submitSearch(input, phone))) return 'retry';
+        invalidateVisibleTextCache();
+        let outcome = await waitSearchOutcome(phone, true);
         if (outcome) return outcome;
 
         const clickResult = await clickAddFriendButton(phone);
