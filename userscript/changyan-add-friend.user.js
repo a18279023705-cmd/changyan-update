@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.12
-// @description  畅言加好友阿陌专用，搜索仅模拟回车一次
+// @version      9.20.13
+// @description  畅言加好友阿陌专用，面板版本号与脚本同步
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -15,7 +15,25 @@
 (function () {
     'use strict';
 
-    const SCRIPT_VERSION = '9.20.7';
+    function readScriptVersionFromMeta() {
+        try {
+            if (typeof GM_info !== 'undefined' && GM_info?.script?.version) {
+                return String(GM_info.script.version).trim();
+            }
+        } catch (e) { /* ignore */ }
+        try {
+            const scripts = document.getElementsByTagName('script');
+            for (let i = scripts.length - 1; i >= 0; i--) {
+                const text = scripts[i].textContent || '';
+                if (!text.includes('changyan_add_friend') && !text.includes('畅言加好友')) continue;
+                const m = text.match(/@version\s+([^\s\n\r]+)/);
+                if (m) return m[1].trim();
+            }
+        } catch (e) { /* ignore */ }
+        return '0.0.0';
+    }
+
+    const SCRIPT_VERSION = readScriptVersionFromMeta();
     const RAW_BASE =
         'https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript';
     const CDN_BASE =
