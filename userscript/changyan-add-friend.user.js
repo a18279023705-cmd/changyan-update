@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.3
-// @description  畅言加好友阿陌专用，两弹窗慢等+话术确认后再完成
+// @version      10.1.4
+// @description  畅言加好友阿陌专用，两弹窗慢等+话术只填一次
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -72,7 +72,6 @@
         remarkSettleMs: 1200,
         remarkFillWaitMs: 12000,
         remarkBeforeCompleteMs: 2000,
-        remarkFillRetries: 3,
         confirmClickMs: 600,
         typingMs: 120,
         typingAfterMs: 200,
@@ -1332,11 +1331,11 @@
             }
             await delay(PACE.pollFastMs);
         }
-            if (findAddFriendButton()) {
-                setStatus(`等待资料页加载: ${phone}`);
-                await delay(PACE.profilePanelSettleMs);
-                return null;
-            }
+        if (findAddFriendButton()) {
+            setStatus(`等待资料页加载: ${phone}`);
+            await delay(PACE.profilePanelSettleMs);
+            return null;
+        }
         if (findExistingFriendPanel()) {
             return await handleAlreadyFriend(phone, waitFriendPanel);
         }
@@ -1646,24 +1645,16 @@
     async function fillFriendApplyRemark(remark) {
         const text = String(remark || '').trim();
         if (!text) return false;
-        const attempts = PACE.remarkFillRetries || 3;
-        for (let i = 1; i <= attempts; i++) {
-            const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
-            if (!input) {
-                await delay(PACE.remarkSettleMs);
-                continue;
-            }
-            setStatus(i > 1 ? `重填验证消息 (${i}/${attempts})…` : `填写验证消息…`);
-            await delay(PACE.friendApplySettleMs);
-            await simulateTyping(input, text);
-            await delay(PACE.remarkSettleMs);
-            if (remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text)) {
-                return true;
-            }
-            if (await typeIntoApplyRemark(input, text)) return true;
-            await delay(PACE.remarkSettleMs);
-            if (await waitUntilRemarkFilled(text, 2500)) return true;
+        const input = await waitFriendApplyRemarkInput(PACE.remarkFillWaitMs);
+        if (!input) return false;
+        setStatus(`填写验证消息…`);
+        await delay(PACE.friendApplySettleMs);
+        await simulateTyping(input, text);
+        await delay(PACE.remarkSettleMs);
+        if (remarkValueMatches(readRemarkValue(getFriendApplyRemarkInput() || input), text)) {
+            return true;
         }
+        if (await typeIntoApplyRemark(input, text)) return true;
         return waitUntilRemarkFilled(text, PACE.remarkFillWaitMs);
     }
 
