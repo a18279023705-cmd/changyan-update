@@ -1,18 +1,14 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.2.1
-// @description  畅言加好友，GM注入面板+本地可装
+// @version      10.2.2
+// @description  畅言加好友，grant none 最大兼容
 // @match        *://web.rvtqh.com*
 // @match        *://*.rvtqh.com/*
 // @match        http://web.rvtqh.com/*
 // @match        https://web.rvtqh.com/*
-// @grant        GM.addElement
-// @grant        GM.setValue
-// @grant        GM.getValue
-// @inject-into  page
-// @run-at       document-start
-// @connect      *
+// @grant        none
+// @run-at       document-end
 // @homepageURL  https://github.com/a18279023705-cmd/changyan-update
 // @updateURL    https://raw.githubusercontent.com/a18279023705-cmd/changyan-update/main/userscript/changyan-add-friend.meta.js
 // @downloadURL  https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js
@@ -21,75 +17,67 @@
 (function () {
     'use strict';
 
-    const CY_BOOT_VERSION = '10.2.1';
+    const CY_BOOT_VERSION = '10.2.2';
+
+    /** 挂到 html 根节点，避免 SPA 清空 body 后面板消失 */
+    function cyMountRoot() {
+        return document.documentElement || document.body;
+    }
 
     function cyAppendToPage(el) {
-        const root = document.body || document.documentElement;
+        const root = cyMountRoot();
         if (!root) return false;
-        try {
-            if (typeof GM !== 'undefined' && GM.addElement) {
-                const attrs = { parentNode: root, id: el.id };
-                if (el.innerHTML) attrs.innerHTML = el.innerHTML;
-                else if (el.textContent) attrs.textContent = el.textContent;
-                if (el.title) attrs.title = el.title;
-                if (el.getAttribute('style')) attrs.style = el.getAttribute('style');
-                if (el.className) attrs.className = el.className;
-                GM.addElement(el.tagName.toLowerCase(), attrs);
-                return true;
-            }
-        } catch (e) { /* fallback */ }
         root.appendChild(el);
         return true;
     }
 
-    /** 脚本一加载：红色标记 + 左下角按钮，确认脚本已运行 */
+    /** 全屏顶栏 + 左下按钮，脚本一运行必见 */
     function cyEmergencyBootstrap() {
         const mount = () => {
             try {
-                const root = document.body || document.documentElement;
+                const root = cyMountRoot();
                 if (!root) return;
 
-                if (!document.getElementById('cy-loaded-ping')) {
-                    const ping = document.createElement('div');
-                    ping.id = 'cy-loaded-ping';
-                    ping.textContent = `畅言脚本 v${CY_BOOT_VERSION} 已加载`;
-                    ping.title = '点击打开加好友面板';
-                    ping.style.cssText =
-                        'position:fixed;top:10px;left:10px;z-index:2147483647;background:#dc2626;color:#fff;' +
-                        'padding:8px 14px;border-radius:10px;font:700 13px/1.4 "Microsoft YaHei",sans-serif;' +
-                        'cursor:pointer;box-shadow:0 8px 24px rgba(220,38,38,0.45);user-select:none;';
-                    ping.onclick = () => {
+                if (!document.getElementById('cy-must-show')) {
+                    const bar = document.createElement('div');
+                    bar.id = 'cy-must-show';
+                    bar.textContent = `畅言加好友脚本 v${CY_BOOT_VERSION} 已运行 — 点击打开面板`;
+                    bar.style.cssText =
+                        'position:fixed!important;top:0;left:0;right:0;z-index:2147483647!important;' +
+                        'background:#dc2626!important;color:#fff!important;padding:10px 14px!important;' +
+                        'text-align:center!important;font:700 14px/1.4 "Microsoft YaHei",sans-serif!important;' +
+                        'cursor:pointer!important;box-shadow:0 4px 16px rgba(0,0,0,0.25)!important;';
+                    bar.onclick = () => {
                         if (typeof window.__cyRestorePanel === 'function') window.__cyRestorePanel();
-                        else {
-                            const p = document.getElementById('cy-add-friend-panel');
-                            if (p) { p.classList.remove('cy-minimized'); p.style.display = ''; }
-                        }
                     };
-                    cyAppendToPage(ping);
+                    cyAppendToPage(bar);
                 }
 
                 if (!document.getElementById('cy-mini-btn')) {
                     const btn = document.createElement('button');
                     btn.id = 'cy-mini-btn';
                     btn.type = 'button';
-                    btn.title = `畅言加好友 v${CY_BOOT_VERSION} · 点击打开`;
+                    btn.title = `畅言加好友 v${CY_BOOT_VERSION}`;
                     btn.innerHTML = '<span style="font-size:13px;font-weight:800;line-height:1">畅言</span><span style="font-size:8px;margin-top:2px">阿陌</span>';
                     btn.style.cssText =
-                        'position:fixed;left:12px;bottom:72px;z-index:2147483647;width:54px;height:54px;' +
-                        'border-radius:50%;border:none;background:linear-gradient(145deg,#93c5fd,#0ea5e9);' +
-                        'color:#fff;cursor:pointer;display:flex;flex-direction:column;align-items:center;' +
-                        'justify-content:center;box-shadow:0 10px 26px rgba(14,165,233,0.4);padding:0;';
-                    btn.onclick = ping.onclick;
+                        'position:fixed!important;left:12px;bottom:72px;z-index:2147483647!important;width:54px;height:54px;' +
+                        'border-radius:50%;border:none;background:linear-gradient(145deg,#93c5fd,#0ea5e9)!important;' +
+                        'color:#fff!important;cursor:pointer!important;display:flex!important;flex-direction:column;' +
+                        'align-items:center!important;justify-content:center!important;' +
+                        'box-shadow:0 10px 26px rgba(14,165,233,0.4)!important;padding:0!important;';
+                    btn.onclick = () => {
+                        if (typeof window.__cyRestorePanel === 'function') window.__cyRestorePanel();
+                    };
                     cyAppendToPage(btn);
                 }
             } catch (e) {
-                console.error('[畅言加好友] bootstrap 失败', e);
+                console.error('[畅言加好友] bootstrap', e);
             }
         };
         mount();
-        document.addEventListener('DOMContentLoaded', mount, { once: true });
-        window.addEventListener('load', mount, { once: true });
-        setInterval(mount, 1000);
+        document.addEventListener('DOMContentLoaded', mount);
+        window.addEventListener('load', mount);
+        setInterval(mount, 500);
     }
     cyEmergencyBootstrap();
 
@@ -2991,7 +2979,7 @@
         document.head.appendChild(style);
         }
 
-        const mountRoot = document.body || document.documentElement;
+        const mountRoot = cyMountRoot();
         panel = document.createElement('div');
         panel.id = 'cy-add-friend-panel';
 
