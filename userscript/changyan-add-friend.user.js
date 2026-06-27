@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.7
-// @description  畅言加好友，识别话术弹窗内填入再点完成
+// @version      10.1.8
+// @description  畅言加好友，面板常驻+SPA自动恢复
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -461,14 +461,18 @@
     function minimizePanel() {
         if (!panel || !elMiniBtn) return;
         panel.classList.add('cy-minimized');
-        elMiniBtn.classList.add('cy-visible');
+        elMiniBtn.classList.remove('cy-hidden');
         updateMiniButton();
     }
 
     function restorePanel() {
+        if (!document.getElementById('cy-add-friend-panel')) createPanel();
+        panel = document.getElementById('cy-add-friend-panel');
+        elMiniBtn = document.getElementById('cy-mini-btn');
         if (!panel || !elMiniBtn) return;
         panel.classList.remove('cy-minimized');
-        elMiniBtn.classList.remove('cy-visible');
+        elMiniBtn.classList.add('cy-hidden');
+        lockPanelPosition();
     }
 
     function startKeepAlive() {
@@ -2573,10 +2577,53 @@
         reader.readAsArrayBuffer(file);
     }
 
-    function createPanel() {
-        if (document.getElementById('cy-add-friend-panel')) return;
+    function mountPanelNow() {
+        const root = document.body || document.documentElement;
+        if (!root) return false;
+        createPanel();
+        lockPanelPosition();
+        return !!document.getElementById('cy-add-friend-panel');
+    }
 
+    function syncPanelRefs() {
+        panel = document.getElementById('cy-add-friend-panel');
+        elMiniBtn = document.getElementById('cy-mini-btn');
+        if (!panel) return;
+        elTalk = panel.querySelector('textarea');
+        elStatus = panel.querySelector('.cy-status');
+        elProgress = panel.querySelector('.cy-progress');
+        elProgressBar = panel.querySelector('.cy-progress-bar');
+        elStats = panel.querySelector('.cy-stats');
+        elBtnStart = panel.querySelector('.cy-btn-start');
+        elBtnStop = panel.querySelector('.cy-btn-stop');
+        elBtnImport = panel.querySelector('.cy-btn-import');
+        elBtnClear = panel.querySelector('.cy-btn-clear');
+    }
+
+    function createPanel() {
+        const existing = document.getElementById('cy-add-friend-panel');
+        if (existing) {
+            syncPanelRefs();
+            if (!elMiniBtn) {
+                elMiniBtn = document.createElement('button');
+                elMiniBtn.id = 'cy-mini-btn';
+                elMiniBtn.type = 'button';
+                elMiniBtn.title = '畅言加好友 · 阿陌专用';
+                elMiniBtn.innerHTML = '<span class="cy-mini-main">畅言</span><span class="cy-mini-sub">阿陌</span>';
+                elMiniBtn.onclick = () => restorePanel();
+                (document.body || document.documentElement).appendChild(elMiniBtn);
+            }
+            if (panel.classList.contains('cy-minimized')) {
+                elMiniBtn.classList.remove('cy-hidden');
+            } else {
+                elMiniBtn.classList.add('cy-hidden');
+            }
+            return;
+        }
+
+        if (!document.getElementById('cy-add-friend-styles')) {
         const style = document.createElement('style');
+        style.id = 'cy-add-friend-styles';
         style.textContent = `
             @keyframes cy-shimmer {
                 0% { background-position: 200% center; }
@@ -2591,7 +2638,7 @@
                 50% { transform: translateY(-2px); }
             }
             #cy-add-friend-panel {
-                position: fixed; top: 12px; right: 12px; z-index: 99999;
+                position: fixed; top: 12px; right: 12px; z-index: 2147483646;
                 width: 388px; background: rgba(255,255,255,0.97);
                 border-radius: 22px; overflow: hidden;
                 border: 1px solid rgba(125,211,252,0.65);
@@ -2839,17 +2886,17 @@
                 padding: 0 8px;
             }
             #cy-mini-btn {
-                position: fixed; left: 12px; bottom: 72px; z-index: 9999;
+                position: fixed; left: 12px; bottom: 72px; z-index: 2147483646;
                 width: 54px; height: 54px; border-radius: 50%; border: none;
                 background: linear-gradient(145deg, #93c5fd, #0ea5e9);
                 color: #fff; cursor: pointer;
                 box-shadow: 0 10px 26px rgba(14,165,233,0.34);
-                display: none; flex-direction: column; align-items: center; justify-content: center;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
                 user-select: none; padding: 0; line-height: 1.05;
                 transition: transform .15s ease, box-shadow .15s ease;
             }
             #cy-mini-btn:hover { transform: scale(1.05); }
-            #cy-mini-btn.cy-visible { display: flex; }
+            #cy-mini-btn.cy-hidden { display: none !important; }
             #cy-mini-btn.cy-running {
                 box-shadow: 0 0 0 4px rgba(125,211,252,0.38), 0 10px 26px rgba(14,165,233,0.34);
             }
@@ -2862,7 +2909,9 @@
             #cy-mini-btn .cy-mini-sub { font-size: 8px; margin-top: 2px; opacity: 0.96; }
         `;
         document.head.appendChild(style);
+        }
 
+        const mountRoot = document.body || document.documentElement;
         panel = document.createElement('div');
         panel.id = 'cy-add-friend-panel';
 
@@ -2949,20 +2998,25 @@
 
         body.append(progressCard, talkCol, btnsWrap, elStatus);
         panel.append(head, body);
-        document.body.appendChild(panel);
+        mountRoot.appendChild(panel);
 
         elMiniBtn = document.createElement('button');
         elMiniBtn.id = 'cy-mini-btn';
         elMiniBtn.type = 'button';
-        elMiniBtn.title = '畅言加好友 · 阿陌专用';
+        elMiniBtn.title = '畅言加好友 · 点击打开面板';
         elMiniBtn.innerHTML = '<span class="cy-mini-main">畅言</span><span class="cy-mini-sub">阿陌</span>';
         elMiniBtn.onclick = () => restorePanel();
-        document.body.appendChild(elMiniBtn);
+        elMiniBtn.classList.add('cy-hidden');
+        mountRoot.appendChild(elMiniBtn);
 
+        if (!document.getElementById('cy-file-xlsx')) {
         elFileXlsx = Object.assign(document.createElement('input'), {
-            type: 'file', accept: '.xlsx,.xls', style: 'display:none'
+            type: 'file', accept: '.xlsx,.xls', style: 'display:none', id: 'cy-file-xlsx'
         });
-        document.body.appendChild(elFileXlsx);
+        mountRoot.appendChild(elFileXlsx);
+        } else {
+            elFileXlsx = document.getElementById('cy-file-xlsx');
+        }
 
         elBtnImport.onclick = () => elFileXlsx.click();
         elFileXlsx.onchange = e => {
@@ -2981,17 +3035,17 @@
         lockPanelPosition();
         window.addEventListener('resize', lockPanelPosition);
 
-        setStatus('面板已就绪 | 请在「添加好友」页运行；去聊天会自动等待');
+        setStatus('面板已就绪 | 聊天页也可见；加好友请进左侧「添加好友」');
     }
 
     async function boot() {
         getTabId();
         loadSessionDone();
         bindProgressGuard();
+        mountPanelNow();
         const ok = await checkForceUpdate();
         if (!ok) return;
-        createPanel();
-        lockPanelPosition();
+        mountPanelNow();
         if (loadProgress()) {
             setStatus(`已恢复进度，已完成 ${completedCount()}/${phoneList.length}，继续: ${phoneList[phoneIndex] || '—'}（点「继续」开始）`);
         }
@@ -3005,18 +3059,40 @@
         if (window.__cyPanelWatchdog) return;
         window.__cyPanelWatchdog = true;
         const ensurePanel = () => {
-            if (!document.getElementById('cy-add-friend-panel')) createPanel();
-            lockPanelPosition();
+            mountPanelNow();
             if (running && !keepAliveActive) startKeepAlive();
         };
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') ensurePanel();
         });
-        setInterval(ensurePanel, 8000);
+        setInterval(ensurePanel, 2000);
+        try {
+            const obs = new MutationObserver(() => {
+                if (!document.getElementById('cy-add-friend-panel')) mountPanelNow();
+            });
+            obs.observe(document.documentElement, { childList: true, subtree: true });
+        } catch (e) { /* ignore */ }
     }
 
-    if (document.readyState !== 'loading') boot();
-    else window.addEventListener('DOMContentLoaded', boot);
+    function scheduleBoot() {
+        const run = () => {
+            mountPanelNow();
+            boot();
+        };
+        if (document.body) run();
+        else {
+            const waitBody = setInterval(() => {
+                if (document.body) {
+                    clearInterval(waitBody);
+                    run();
+                }
+            }, 200);
+            setTimeout(() => clearInterval(waitBody), 20000);
+        }
+    }
+
+    if (document.readyState !== 'loading') scheduleBoot();
+    else window.addEventListener('DOMContentLoaded', scheduleBoot);
 
     startPanelWatchdog();
 
