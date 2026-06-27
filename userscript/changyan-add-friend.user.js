@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.15
-// @description  畅言加好友阿陌专用，频繁限制随机等待60-80秒
+// @version      9.20.16
+// @description  畅言加好友阿陌专用，回车搜索后才判频繁限制
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -131,8 +131,6 @@
         '1分钟后再试',
         '请1分钟后再试',
         '请一分钟后再试',
-        '稍后再试',
-        '请稍候',
     ];
     const HINT_SELECTORS = [
         '.semi-toast-content',
@@ -573,6 +571,37 @@
         const quick = collectHintText();
         if (quick && textHasAny(quick, RATE_LIMIT_HINTS)) return true;
         return textHasAny(getVisibleText(force), RATE_LIMIT_HINTS);
+    }
+
+    /** 仅在本轮已模拟回车后，才把频繁提示算作搜索触发的限频 */
+    function detectSearchRateLimit(force = false) {
+        if (!searchEnterUsedThisAttempt) return false;
+        return detectRateLimit(force);
+    }
+
+    async function dismissStaleRateLimitToasts() {
+        let dismissed = false;
+        for (const sel of HINT_SELECTORS) {
+            for (const el of document.querySelectorAll(sel)) {
+                if (isOurUI(el)) continue;
+                const t = (el.innerText || el.textContent || '').trim();
+                if (!textHasAny(t, RATE_LIMIT_HINTS)) continue;
+                const root = el.closest(
+                    '.semi-toast, .semi-notification, [class*="toast"], [class*="Toast"], [role="alert"]'
+                ) || el;
+                const closeBtn = root.querySelector(
+                    '.semi-toast-close, .semi-icon-close, [class*="close"], button[aria-label*="关闭"], button[aria-label*="Close"]'
+                );
+                if (closeBtn && !isOurUI(closeBtn)) {
+                    closeBtn.click();
+                    dismissed = true;
+                }
+            }
+        }
+        if (dismissed) {
+            invalidateVisibleTextCache();
+            await delay(350);
+        }
     }
 
     function detectUserNotFound() {
@@ -1260,12 +1289,12 @@
         input.focus();
         await delay(PACE.typingMs);
 
-        searchEnterUsedThisAttempt = true;
-        setStatus(`回车搜索: ${value}`);
-
         if (!callInputEnterPress(input, value)) {
             await dispatchEnterKey(input);
         }
+
+        searchEnterUsedThisAttempt = true;
+        setStatus(`回车搜索: ${value}`);
         await delay(450);
         return true;
     }
@@ -1471,7 +1500,7 @@
     async function waitSearchOutcome(phone, waitFriendPanel) {
         const endAt = Date.now() + PACE.searchProfileWaitMs;
         while (Date.now() < endAt) {
-            const blocked = checkRateLimitOrNotFound();
+            const blocked = checkRateLimitOrNotFound({ searchPhase: true });
             if (blocked) return blocked;
             if (findAddFriendButton()) return null;
             if (findExistingFriendPanel()) {
@@ -1483,7 +1512,7 @@
         if (findExistingFriendPanel()) {
             return await handleAlreadyFriend(phone, waitFriendPanel);
         }
-        return checkRateLimitOrNotFound();
+        return checkRateLimitOrNotFound({ searchPhase: true });
     }
 
     function waitForSelector(selector, maxMs = 40 * PACE.pollFastMs, interval = PACE.pollFastMs) {
@@ -1605,9 +1634,9 @@
         return 'already_friend';
     }
 
-    /** 频率限制 / 用户不存在（不改变 phoneIndex 的仅 rate_limit、retry） */
-    function checkRateLimitOrNotFound() {
-        if (detectRateLimit()) return 'rate_limit';
+    /** 频率限制 / 用户不存在（搜索阶段限频须已回车） */
+    function checkRateLimitOrNotFound({ searchPhase = false } = {}) {
+        if (searchPhase ? detectSearchRateLimit() : detectRateLimit()) return 'rate_limit';
         if (detectUserNotFound()) return 'not_found';
         return null;
     }
@@ -1992,7 +2021,6 @@
      */
     async function addFriendAttempt(phone) {
         await waitUntilTabActive();
-        if (detectRateLimit()) return 'rate_limit';
 
         if (isSessionDone(phone)) {
             clearInFlightPhone();
@@ -2028,7 +2056,10 @@
         if (!input) return 'retry';
         cachedSearchInput = input;
 
+        await dismissStaleRateLimitToasts();
+
         if (!(await submitSearch(input, phone))) return 'retry';
+        if (detectSearchRateLimit(true)) return 'rate_limit';
         invalidateVisibleTextCache();
         let outcome = await waitSearchOutcome(phone, true);
         if (outcome) return outcome;
@@ -2160,10 +2191,7 @@
                 continue;
             }
 
-            if (detectRateLimit(true)) {
-                await onRateLimitHit(phone);
-                continue;
-            }
+            await dismissStaleRateLimitToasts();
 
             if (isFinishButtonLoading()) {
                 setStatus(`等待上一号提交完成…`);
