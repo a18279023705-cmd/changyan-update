@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.13
-// @description  畅言加好友阿陌专用，面板版本号与脚本同步
+// @version      9.20.14
+// @description  畅言加好友阿陌专用，号码可见即模拟回车不再误判未完成
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -1121,7 +1121,9 @@
     function isSearchInputFilled(input, phone) {
         const expected = String(phone || '').trim();
         if (!expected) return false;
-        return getSearchInputDisplayValue(input) === expected;
+        if (getSearchInputDisplayValue(input) === expected) return true;
+        if (readInputValue(input) === expected) return true;
+        return false;
     }
 
     function findFriendAddInstance() {
@@ -1213,6 +1215,10 @@
         return isSearchInputFilled(input, keyword);
     }
 
+    function canSubmitSearch(input, phone) {
+        return isSearchInputFilled(input, phone);
+    }
+
     function callInputEnterPress(input, keyword) {
         const value = String(keyword || getSearchInputDisplayValue(input) || '').trim();
         const ev = {
@@ -1268,25 +1274,23 @@
         const keyword = String(phone || '').trim();
         if (!keyword) return false;
 
-        if (!isSearchInputFilled(input, keyword)) {
-            const current = getSearchInputDisplayValue(input);
+        if (!canSubmitSearch(input, keyword)) {
+            const current = getSearchInputDisplayValue(input) || readInputValue(input);
             if (current && current !== keyword) clearSearchInput(input);
 
             if (isFriendAddSearchInput(input)) {
-                if (!(await fillFriendAddSearchInput(input, keyword))) {
-                    setStatus(`搜索框未能填入: ${keyword}`);
-                    return false;
-                }
+                await fillFriendAddSearchInput(input, keyword);
             } else {
                 input.focus();
                 await delay(PACE.typingMs);
                 setInputValue(input, keyword);
                 await delay(PACE.typingMs);
-                if (!isSearchInputFilled(input, keyword)) {
-                    setStatus(`搜索框未能填入: ${keyword}`);
-                    return false;
-                }
             }
+        }
+
+        if (!canSubmitSearch(input, keyword)) {
+            setStatus(`搜索框未能填入: ${keyword}`);
+            return false;
         }
 
         await triggerSearchEnter(input, keyword);
@@ -2210,9 +2214,12 @@
             } else if (result === 'rate_limit') {
                 await onRateLimitHit(phone);
             } else {
-                setStatus(`未完成添加，重试当前号: ${phone}`);
+                const failHint = searchEnterUsedThisAttempt ? '搜索后未完成' : '填号后未完成';
+                setStatus(`${failHint}，重试当前号: ${phone}`);
                 await dismissOverlaySafely();
-                clearSearchInput();
+                const inp = findSearchInput();
+                const cur = inp ? (getSearchInputDisplayValue(inp) || readInputValue(inp)) : '';
+                if (cur !== phone) clearSearchInput(inp);
                 await delay(PACE.afterRetryMs);
             }
 
