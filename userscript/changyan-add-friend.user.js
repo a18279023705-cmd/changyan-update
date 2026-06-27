@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.0.0
-// @description  畅言加好友阿陌专用，v2.3填号回车逻辑+面板频繁限制
+// @version      10.1.0
+// @description  畅言加好友阿陌专用，频繁不等待直接下一号
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -43,22 +43,12 @@
     const DOWNLOAD_URL =
         'https://github.com/a18279023705-cmd/changyan-update/releases/latest/download/changyan-add-friend.user.js';
 
-    /** 稳定跑够后频繁过多才长冷却；单次频繁必等提示消失 */
+    /** 操作节奏（无频繁随机等待） */
     const PACE = {
-        stableSuccessMin: 8,
-        stableSuccessMax: 18,
-        frequentHitThreshold: 2,
-        cooldownCenterSec: 80,
-        cooldownJitterSec: 20,
-        rateLimitMinSec: 60,
-        rateLimitMaxSec: 80,
-        rateLimitStreakExtraSec: 0,
-        rateLimitClearMaxSec: 120,
         stuckForceMs: 18000,
         afterSuccessMs: 900,
         afterNotFoundMs: 550,
-        afterSkipMs: 500,
-        afterDeferMs: 1500,
+        afterSkipMs: 400,
         afterRetryMs: 900,
         searchWaitMs: 520,
         searchProfileWaitMs: 10000,
@@ -610,169 +600,34 @@
         return getVisibleText().includes('用户不存在');
     }
 
-    function rollStableSuccessTarget() {
-        const lo = PACE.stableSuccessMin;
-        const hi = PACE.stableSuccessMax;
-        stableSuccessTarget = lo + Math.floor(Math.random() * (hi - lo + 1));
-        return stableSuccessTarget;
-    }
-
     function resetFrequentTracking() {
-        successSinceCooldown = 0;
-        frequentHitCount = 0;
         rateLimitRoundCount = 0;
+        frequentHitCount = 0;
         consecutiveRateLimitHits = 0;
-        rollStableSuccessTarget();
     }
 
-    function showCountdown(hint, leftSec, phone, totalSec) {
-        countdownActive = true;
-        countdownLeftSec = Math.max(0, leftSec);
-        if (totalSec > 0) countdownTotalSec = totalSec;
-        const total = countdownTotalSec || countdownLeftSec || 1;
-        const ringOffset = COUNTDOWN_RING_LEN * (1 - countdownLeftSec / total);
-        if (elStatus) {
-            elStatus.classList.add('cy-waiting', 'cy-countdown-mode');
-            elStatus.innerHTML =
-                `<div class="cy-status-count-label">${escapeHtml(hint)}</div>` +
-                `<div class="cy-countdown-visual">` +
-                `<svg class="cy-countdown-ring" viewBox="0 0 88 88" aria-hidden="true">` +
-                `<circle class="cy-ring-bg" cx="44" cy="44" r="38"/>` +
-                `<circle class="cy-ring-fg" cx="44" cy="44" r="38" ` +
-                `stroke-dasharray="${COUNTDOWN_RING_LEN}" stroke-dashoffset="${ringOffset}"/>` +
-                `</svg>` +
-                `<div class="cy-status-count-sec">${countdownLeftSec}<span class="cy-status-count-unit">秒</span></div>` +
-                `</div>` +
-                (phone ? `<div class="cy-status-count-sub">${escapeHtml(phone)}</div>` : '');
-        }
-        updateMiniButton();
-    }
-
-    function hideCountdown() {
-        countdownActive = false;
-        countdownLeftSec = 0;
-        countdownTotalSec = 0;
-        if (elStatus) {
-            elStatus.classList.remove('cy-countdown-mode');
-            elStatus.innerHTML = '';
-        }
-        updateMiniButton();
-    }
-
-    /** 统一倒计时（仅状态区一处显示） */
-    async function runCountdownWait({
-        label,
-        totalSec,
-        phone = '',
-        alsoWaitClear = false,
-        hardMaxSec = 0,
-    }) {
-        const startAt = Date.now();
-        const minEndAt = startAt + totalSec * 1000;
-        const hardEndAt = hardMaxSec > 0 ? startAt + hardMaxSec * 1000 : minEndAt;
-        countdownTotalSec = totalSec;
-
-        while (Date.now() < hardEndAt) {
-            if (stopRequested) {
-                hideCountdown();
-                return;
-            }
-            invalidateVisibleTextCache();
-            const stillLimited = alsoWaitClear && detectRateLimit(true);
-            const leftSec = Math.max(0, Math.ceil((minEndAt - Date.now()) / 1000));
-            const hardLeftSec = Math.max(0, Math.ceil((hardEndAt - Date.now()) / 1000));
-
-            if (!stillLimited && Date.now() >= minEndAt) break;
-
-            const displaySec = stillLimited && leftSec <= 0 ? hardLeftSec : leftSec;
-            const hint = stillLimited && leftSec <= 0 ? '等待频繁提示消失' : label;
-            showCountdown(hint, displaySec, phone, totalSec);
-            await delay(1000);
-        }
-        hideCountdown();
-    }
-
-    /** 频繁等待：短缓冲与长冷却合并为一次倒计时 */
-    async function handleRateLimitWait(phone, statusSub = '') {
-        const useLongCooldown = shouldTriggerCooldown();
-
-        const totalSec = useLongCooldown
-            ? Math.max(1, Math.round(cooldownDelayMs() / 1000))
-            : rateLimitWaitSec();
-
-        await runCountdownWait({
-            label: useLongCooldown ? '频繁过多 · 长冷却' : '频繁限制 · 等待中',
-            totalSec,
-            phone: statusSub || phone,
-            alsoWaitClear: !useLongCooldown,
-            hardMaxSec: useLongCooldown ? 0 : PACE.rateLimitClearMaxSec,
-        });
-
-        if (useLongCooldown) resetFrequentTracking();
-    }
-
-    /** 统一频繁处理：移号 + 等待 + 清搜索，避免同一号连续回车提交 */
+    /** 频繁限制：不等待，移后当前号并立即处理下一号 */
     async function onRateLimitHit(phone) {
-        consecutiveRateLimitHits++;
-        frequentHitCount++;
         invalidateVisibleTextCache();
         await dismissOverlaySafely();
+        await dismissStaleRateLimitToasts();
         clearSearchInput();
+        clearInFlightPhone();
 
-        let deferredPhone = phone;
-        let listReordered = false;
+        let skipped = phone;
         if (phoneList.length > 1) {
             const { phone: d } = deferCurrentPhoneToEnd();
-            deferredPhone = d || phone;
-            listReordered = true;
-            rateLimitRoundCount++;
-        }
-
-        const nextPhone = phoneList[phoneIndex] || '';
-        const countdownSub =
-            phoneList.length > 1 && nextPhone && nextPhone !== deferredPhone
-                ? `移后 ${deferredPhone} · 下一号 ${nextPhone}`
-                : deferredPhone;
-
-        await handleRateLimitWait(deferredPhone, countdownSub);
-
-        if (phoneList.length > 1) {
-            setStatus(`已移后 ${deferredPhone} → 继续 ${nextPhone || '—'}`);
-            if (listReordered) savePhoneList();
+            skipped = d || phone;
+            savePhoneList();
         } else {
-            setStatus(`频繁缓冲结束，重试 ${deferredPhone}`);
+            phoneIndex++;
         }
+
+        const next = phoneList[phoneIndex] || '—';
+        setStatus(`频繁限制，跳过 ${skipped} → 下一号 ${next}`);
         updateStats();
-        await delay(PACE.afterDeferMs);
         saveProgress(true);
-    }
-
-    function rateLimitWaitSec() {
-        const span = PACE.rateLimitMaxSec - PACE.rateLimitMinSec + 1;
-        return PACE.rateLimitMinSec + Math.floor(Math.random() * span);
-    }
-
-    /** 稳定跑够本轮随机目标后，频繁过多才触发长冷却 */
-    function shouldTriggerCooldown() {
-        const roundAllDeferred =
-            phoneList.length > 1 && rateLimitRoundCount >= phoneList.length;
-        const manyDeferred =
-            deferCount >= Math.max(5, Math.floor(phoneList.length * 0.12));
-        const frequentTooMuch =
-            frequentHitCount >= PACE.frequentHitThreshold ||
-            roundAllDeferred ||
-            manyDeferred ||
-            consecutiveRateLimitHits >= 3;
-        if (!frequentTooMuch) return false;
-        if (phoneList.length <= 1) return true;
-        if (!stableSuccessTarget) rollStableSuccessTarget();
-        return successSinceCooldown >= stableSuccessTarget;
-    }
-
-    function cooldownDelayMs() {
-        const jitter = PACE.cooldownJitterSec;
-        const sec = PACE.cooldownCenterSec + (Math.random() * 2 - 1) * jitter;
-        return Math.round(Math.max(PACE.rateLimitMinSec, sec) * 1000);
+        await delay(PACE.afterSkipMs);
     }
 
     async function forceRecoverStuck(phone) {
@@ -781,7 +636,7 @@
         invalidateVisibleTextCache();
         await dismissOverlaySafely();
         clearSearchInput();
-        await delay(PACE.afterDeferMs);
+        await delay(PACE.afterRetryMs);
     }
 
     function normalizeDeferredLog(log) {
@@ -925,7 +780,6 @@
         rateLimitRoundCount = data.rateLimitRoundCount || 0;
         consecutiveRateLimitHits = data.consecutiveRateLimitHits || 0;
         inFlightPhone = data.inFlightPhone || '';
-        if (!stableSuccessTarget) rollStableSuccessTarget();
         updateStats();
         updateStartButtonLabel();
     }
@@ -1925,7 +1779,7 @@
      * success      → 添加成功，下一号
      * not_found    → 用户不存在，下一号
      * already_friend → 已是好友（点X关闭），下一号
-     * rate_limit   → 频繁限制，当前号移到最后，换下一个号（全批都频繁则等待后重试）
+     * rate_limit   → 频繁限制，当前号移到最后，立即下一号
      * retry        → 未完成添加，清弹窗后重试当前号
      */
     async function addFriendAttempt(phone) {
@@ -2064,8 +1918,6 @@
         stopRequested = false;
         if (phoneIndex === 0 && completedCount() === 0) {
             resetFrequentTracking();
-        } else if (!stableSuccessTarget) {
-            rollStableSuccessTarget();
         }
         updateStats();
         startKeepAlive();
@@ -2116,7 +1968,6 @@
                 markSessionDone(phone);
                 clearInFlightPhone();
                 successCount++;
-                successSinceCooldown++;
                 phoneIndex++;
                 rateLimitRoundCount = 0;
                 frequentHitCount = 0;
