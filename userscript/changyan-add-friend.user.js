@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.8
-// @description  畅言加好友阿陌专用，搜索只触发一次回车避免频繁点击
+// @version      9.20.9
+// @description  畅言加好友阿陌专用，修复搜索框未显示号码就触发搜索
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -105,6 +105,7 @@
     const RATE_LIMIT_HINTS = [
         '请不要频繁点击',
         '请不要频繁',
+        '搜索频繁',
         '操作频繁',
         '点击过于频繁',
         '1分钟后再试',
@@ -1048,10 +1049,59 @@
     }
 
     function getFriendAddSearchInput() {
-        return document.querySelector(
-            '.wk-friendadd .wk-search-input input, .wk-friendadd .wk-search-input textarea, ' +
-            '.wk-friendadd .semi-input input, .wk-friendadd .semi-input textarea'
-        );
+        const selectors = [
+            '.wk-friendadd .wk-search-input input',
+            '.wk-friendadd .wk-search-input textarea',
+            '.wk-friendadd .semi-input input',
+            '.wk-friendadd .semi-input textarea',
+            '.wk-friendadd input.semi-input',
+            '.wk-friendadd input[type="text"]',
+            '.wk-friendadd input[placeholder*="手机"]',
+            '.wk-friendadd input[placeholder*="号"]',
+        ];
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && isInputReady(el) && !isOurUI(el)) return el;
+        }
+        const root = document.querySelector('.wk-friendadd');
+        if (!root) return null;
+        const inputs = root.querySelectorAll('input[type="text"], input:not([type]), textarea');
+        for (const el of inputs) {
+            if (isOurUI(el) || !isInputReady(el)) continue;
+            const ph = (el.getAttribute('placeholder') || '').toLowerCase();
+            if (ph.includes('搜索') || ph.includes('手机') || ph.includes('号') || ph.includes('畅言')) return el;
+        }
+        for (const el of inputs) {
+            if (!isOurUI(el) && isInputReady(el)) return el;
+        }
+        return null;
+    }
+
+    function isFriendAddSearchInput(input) {
+        if (!input) return false;
+        if (input.closest?.('.wk-friendadd')) return true;
+        const hit = getFriendAddSearchInput();
+        return hit === input;
+    }
+
+    /** React 受控输入框：DOM value 有值但界面可能仍为空，需读 props.value */
+    function getSearchInputDisplayValue(input) {
+        if (!input) return '';
+        let el = input;
+        for (let i = 0; i < 10 && el; i++) {
+            const props = getReactProps(el);
+            if (props?.value !== undefined && props.value !== null) {
+                return String(props.value).trim();
+            }
+            el = el.parentElement;
+        }
+        return readInputValue(input);
+    }
+
+    function isSearchInputFilled(input, phone) {
+        const expected = String(phone || '').trim();
+        if (!expected) return false;
+        return getSearchInputDisplayValue(input) === expected;
     }
 
     function findFriendAddInstance() {
@@ -1106,30 +1156,51 @@
         return best;
     }
 
-    function setSearchInputValueQuiet(input, value) {
-        if (!input) return;
-        input.focus();
-        const tag = input.tagName.toLowerCase();
-        const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-        if (setter) setter.call(input, value);
-        else input.value = value;
-    }
+    async function fillFriendAddSearchInput(input, phone) {
+        const keyword = String(phone || '').trim();
+        if (!keyword) return false;
 
-    async function simulateEnterSearch(input, keyword) {
+        input.focus();
+        await delay(PACE.typingMs);
+
         const friendAdd = findFriendAddInstance();
         if (friendAdd) {
             await new Promise(resolve => {
                 try {
-                    friendAdd.setState({ keyword }, () => {
-                        Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
-                    });
+                    friendAdd.setState({ keyword }, resolve);
                 } catch (e) {
                     resolve();
                 }
             });
+            await delay(PACE.typingMs);
+        }
+
+        if (!isSearchInputFilled(input, keyword)) {
+            setInputValue(input, keyword);
+            await delay(PACE.typingMs);
+        }
+
+        if (!isSearchInputFilled(input, keyword)) {
+            syncReactInputValue(input, keyword);
+            const tag = input.tagName.toLowerCase();
+            const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (setter) setter.call(input, keyword);
+            else input.value = keyword;
+            await delay(PACE.typingMs);
+        }
+
+        return isSearchInputFilled(input, keyword);
+    }
+
+    async function triggerFriendAddSearchOnce(input) {
+        const friendAdd = findFriendAddInstance();
+        if (friendAdd) {
+            await new Promise(resolve => {
+                Promise.resolve(friendAdd.searchUser()).then(resolve).catch(resolve);
+            });
             await delay(320);
-            return true;
+            return;
         }
 
         let el = input;
@@ -1138,7 +1209,7 @@
             if (props?.onEnterPress) {
                 props.onEnterPress();
                 await delay(320);
-                return true;
+                return;
             }
             el = el.parentElement;
         }
@@ -1147,25 +1218,41 @@
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
         }));
         await delay(320);
-        return false;
+    }
+
+    async function simulateEnterSearch(input, keyword) {
+        await triggerFriendAddSearchOnce(input);
+        return true;
     }
 
     async function submitSearch(input, phone) {
-        if (input.closest?.('.wk-friendadd') || getFriendAddSearchInput() === input) {
-            setSearchInputValueQuiet(input, phone);
-            await delay(PACE.typingMs);
-            await simulateEnterSearch(input, phone);
+        const keyword = String(phone || '').trim();
+        if (!keyword) return false;
+
+        if (isFriendAddSearchInput(input)) {
+            const filled = await fillFriendAddSearchInput(input, keyword);
+            if (!filled) {
+                setStatus(`搜索框未能填入: ${keyword}`);
+                return false;
+            }
+            await triggerFriendAddSearchOnce(input);
             await delay(1200);
-            return;
+            return true;
         }
+
         input.focus();
         await delay(PACE.typingMs);
-        setInputValue(input, phone);
+        setInputValue(input, keyword);
         await delay(PACE.typingMs);
+        if (!isSearchInputFilled(input, keyword)) {
+            setStatus(`搜索框未能填入: ${keyword}`);
+            return false;
+        }
         input.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true,
         }));
         await delay(PACE.typingAfterMs);
+        return true;
     }
 
     async function humanClick(el) {
@@ -1897,18 +1984,18 @@
         if (!input) return 'retry';
         cachedSearchInput = input;
 
-        const current = readInputValue(input);
+        const current = getSearchInputDisplayValue(input);
         let outcome;
-        if (current === phone) {
+        if (isSearchInputFilled(input, phone)) {
             outcome = await waitSearchOutcome(phone, true);
             if (!outcome && !findAddFriendButton() && !isFriendApplyRouteOpen()) {
-                await submitSearch(input, phone);
+                if (!(await submitSearch(input, phone))) return 'retry';
                 invalidateVisibleTextCache();
                 outcome = await waitSearchOutcome(phone, true);
             }
         } else {
             if (current) clearSearchInput(input);
-            await submitSearch(input, phone);
+            if (!(await submitSearch(input, phone))) return 'retry';
             invalidateVisibleTextCache();
             outcome = await waitSearchOutcome(phone, true);
         }
