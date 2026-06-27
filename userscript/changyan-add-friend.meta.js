@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.6
-// @description  畅言加好友阿陌专用，离开添加页自动让出、回来继续
+// @version      10.1.7
+// @description  畅言加好友，识别话术弹窗内填入再点完成
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
