@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      10.1.4
-// @description  畅言加好友阿陌专用，两弹窗慢等+话术只填一次
+// @version      10.1.5
+// @description  畅言加好友阿陌专用，离开添加页自动让出、回来继续
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
@@ -299,6 +299,39 @@
         } catch (e) {}
     }
 
+    /** 是否仍在加好友流程内（含搜索资料页、申请页、提交中） */
+    function isInAddFriendFlow() {
+        if (isOnFriendAddPage()) return true;
+        if (isFriendApplyRouteOpen()) return true;
+        if (isSubmitInProgress()) return true;
+        if (findAddFriendButton()) return true;
+        if (inFlightPhone && (isFinishButtonLoading() || getFriendApplyRemarkInput())) return true;
+        return false;
+    }
+
+    /** 单页登录：用户去聊天时会离开添加好友页，此处等待回来再跑，不抢界面 */
+    async function waitUntilAddFriendReady() {
+        let yielded = false;
+        while (running && !stopRequested) {
+            await waitUntilTabActive();
+            if (isInAddFriendFlow()) {
+                if (yielded) {
+                    setStatus(`已回到添加好友页，继续…`);
+                    await delay(PACE.actionSettleMs);
+                }
+                return true;
+            }
+            if (!yielded) {
+                const next = phoneList[phoneIndex] || '';
+                setStatus(`已让出页面（可去聊天）| 回来「添加好友」页自动继续: ${next}`);
+                saveProgress(true);
+                yielded = true;
+            }
+            await delay(500);
+        }
+        return false;
+    }
+
     function clearInFlightPhone() {
         if (!inFlightPhone) return;
         inFlightPhone = '';
@@ -369,7 +402,11 @@
 
             if (raced.type === 'done') return raced.result;
 
-            if (isSubmitInProgress() || countdownActive || document.visibilityState === 'hidden') {
+            if (isSubmitInProgress() || countdownActive) {
+                continue;
+            }
+            if (!isInAddFriendFlow()) {
+                await waitUntilAddFriendReady();
                 continue;
             }
 
@@ -2031,7 +2068,7 @@
             const nextPhone = phoneList[phoneIndex] || '';
             setStatus(`已完成 ${completedCount()}/${phoneList.length}，继续: ${nextPhone}${deferCount ? `（移后 ${deferCount} 个待补扫）` : ''}`);
         } else {
-            setStatus('开始加好友（后台可继续）...');
+            setStatus('开始加好友（请保持在「添加好友」页；去聊天会自动等待）...');
         }
 
         while (phoneIndex < phoneList.length) {
@@ -2766,7 +2803,7 @@
                 <div class="cy-head-sub">
                     <span class="cy-badge">阿陌专用</span>
                     <span class="cy-ver">v${SCRIPT_VERSION}</span>
-                    <span>后台稳定版</span>
+                    <span>单页让出版</span>
                 </div>
             </div>
             <button type="button" class="cy-head-btn" id="cy-panel-minimize" title="最小化">−</button>
@@ -2873,7 +2910,7 @@
         lockPanelPosition();
         window.addEventListener('resize', lockPanelPosition);
 
-        setStatus('面板已就绪，可最小化后台运行');
+        setStatus('面板已就绪 | 请在「添加好友」页运行；去聊天会自动等待');
     }
 
     async function boot() {
