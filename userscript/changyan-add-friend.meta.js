@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         畅言加好友 阿陌专用 后台稳定版
 // @namespace    http://tampermonkey.net/
-// @version      9.20.14
-// @description  畅言加好友阿陌专用，号码可见即模拟回车不再误判未完成
+// @version      9.20.15
+// @description  畅言加好友阿陌专用，频繁限制随机等待60-80秒
 // @match        *://web.rvtqh.com/*
 // @require      https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js
 // @grant        none
